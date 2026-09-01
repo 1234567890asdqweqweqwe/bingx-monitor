@@ -1,26 +1,28 @@
-name: 資金費率監控機器人
+name: 資金費率與訊號監控機器人
 
 on:
-  workflow_dispatch:  # 這個保留，讓你隨時可以手動測試
+  workflow_dispatch:
   schedule:
-    - cron: '*/15 * * * *'  # 這行就是靈魂！代表每 15 分鐘自動喚醒一次
+    - cron: '*/15 * * * *'
 
 jobs:
   run-bot:
     runs-on: ubuntu-latest
     steps:
-      - name: 下載程式碼
+      - name: Checkout code
         uses: actions/checkout@v3
         
-      - name: 設定 Python 環境
+      - name: Set up Python
         uses: actions/setup-python@v4
         with:
-          python-version: '3.12'
+          python-version: '3.10'
           
-      - name: 安裝套件
-        run: pip install ccxt requests pandas pandas-ta
-        
-      - name: 執行監控腳本
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install ccxt requests pandas pandas-ta
+          
+      - name: Run telegram bot
         env:
           TELEGRAM_TOKEN: ${{ secrets.TELEGRAM_TOKEN }}
           CHAT_ID: ${{ secrets.CHAT_ID }}
