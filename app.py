@@ -6,17 +6,14 @@ import time
 from streamlit_autorefresh import st_autorefresh
 
 # ==========================================
-# 網頁基本設定 (改回置中排列，更像手機 APP)
+# 網頁基本設定 (手機最佳化)
 # ==========================================
 st.set_page_config(page_title="AI 極簡看盤系統", layout="centered")
-st.title("🎯 AI 全市場動態監控")
+st.title("🎯 AI 全市場動態監控 (純幣圈)")
 st.write("每 60 秒自動掃描，為您尋找最佳買賣點與套利機會。")
 
 count = st_autorefresh(interval=60000, limit=None, key="auto_refresh")
 
-# ==========================================
-# 時間週期下拉選單 (滿版顯示，方便手指點擊)
-# ==========================================
 timeframe_label = st.selectbox(
     "⏳ 選擇 K 線時間週期",
     ["15 分鐘 (激進短線)", "1 小時 (穩健波段)", "4 小時 (大趨勢)", "日線 (長線投資)"],
@@ -46,8 +43,16 @@ def scan_market_and_ta(timeframe):
     all_coins = []
     symbol_vol = []
     
+    # 🎯 建立美股、原物料、指數黑名單
+    blacklist = ['NVDA', 'TSLA', 'AAPL', 'MSFT', 'AMZN', 'GOOGL', 'META', 'COIN', 'SP500', 'NDX', 'DJI', 'GOLD', 'SILVER', 'NQ', 'BABA']
+    
     for sym, data in tickers.items():
         if sym.endswith(':USDT') and data.get('quoteVolume') and data.get('percentage') is not None:
+            # 🎯 檢查黑名單，把股票與指數踢出清單
+            base_coin = sym.split('/')[0].split('-')[0].split(':')[0]
+            if base_coin in blacklist:
+                continue
+                
             all_coins.append({
                 '幣種': sym.split(':')[0],
                 '最新價格': data['last'],
@@ -142,7 +147,7 @@ def scan_market_and_ta(timeframe):
     return df_all_market, df_signals
 
 # ==========================================
-# 畫面渲染區塊 (專為手機優化)
+# 畫面渲染區塊
 # ==========================================
 st.caption(f"🔄 最後更新：{time.strftime('%Y-%m-%d %H:%M:%S')}")
 st.divider()
@@ -152,15 +157,12 @@ df_market, df_signals = scan_market_and_ta(selected_timeframe)
 if df_market.empty:
     st.error("連線異常，請稍後再試。")
 else:
-    # 區塊 1：AI 推薦改用「手機卡片」顯示，拒絕左右滑動
     st.subheader(f"💡 AI 潛力幣與套利推薦")
     
     if not df_signals.empty:
         for idx, row in df_signals.iterrows():
-            # 使用 markdown 組裝成漂亮的卡片文字
             card_text = f"**{row['幣種']}** | 價格: `{row['最新價格']}`\n\n**{row['狀態']}**\n\n📝 {row['AI 判斷原因']}"
             
-            # 依照訊號類型給予不同的背景顏色
             if row['type'] == 'buy':
                 st.success(card_text)
             elif row['type'] == 'sell':
@@ -172,14 +174,12 @@ else:
         
     st.divider()
     
-    # 區塊 2：漲跌榜改用「分頁 (Tabs)」顯示，縮短上下滑動距離
     st.subheader("📊 24H 漲跌排行榜 (Top 10)")
     tab1, tab2 = st.tabs(["🔥 漲幅榜", "❄️ 跌幅榜"])
     
     with tab1:
         df_gainers = df_market.head(10).copy()
         df_gainers['24H漲跌(%)'] = df_gainers['24H漲跌(%)'].apply(lambda x: f"+{x:.2f}%")
-        # 移除不需要的成交額，讓手機畫面更乾淨
         st.dataframe(df_gainers[['幣種', '最新價格', '24H漲跌(%)']], use_container_width=True, hide_index=True)
         
     with tab2:
