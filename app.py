@@ -12,13 +12,34 @@ st.set_page_config(page_title="AI 極簡看盤系統", layout="wide")
 st.title("🎯 AI 全市場動態監控系統")
 st.write("系統每 60 秒自動掃描一次市場，為您尋找最佳的「方向性買賣點」與「無風險套利機會」。")
 
+# 自動重整網頁 (每 60 秒)
 count = st_autorefresh(interval=60000, limit=None, key="auto_refresh")
 
 # ==========================================
-# 核心掃描演算法
+# 新增：時間週期下拉選單
+# ==========================================
+col_time, _ = st.columns([1, 3]) # 切割畫面，讓選單不要太寬
+with col_time:
+    timeframe_label = st.selectbox(
+        "⏳ 選擇 K 線時間週期",
+        ["15 分鐘 (激進短線)", "1 小時 (穩健波段)", "4 小時 (大趨勢)", "日線 (長線投資)"],
+        index=1 # 預設停留在 1 小時
+    )
+
+# 將中文標籤轉換為 BingX 看得懂的代碼
+timeframe_map = {
+    "15 分鐘 (激進短線)": "15m",
+    "1 小時 (穩健波段)": "1h",
+    "4 小時 (大趨勢)": "4h",
+    "日線 (長線投資)": "1d"
+}
+selected_timeframe = timeframe_map[timeframe_label]
+
+# ==========================================
+# 核心掃描演算法 (現在會接收你選擇的時間)
 # ==========================================
 @st.cache_data(ttl=50) 
-def scan_market_and_ta():
+def scan_market_and_ta(timeframe):
     exchange = ccxt.bingx({'enableRateLimit': True, 'options': {'defaultType': 'swap'}})
     
     try:
@@ -49,14 +70,14 @@ def scan_market_and_ta():
     for item in top_80:
         sym = item['symbol']
         try:
-            # 1. 抓取資金費率 (新增的套利判斷)
+            # 1. 判斷高額資金費率 (套利無關 K 線週期，隨時抓取)
             funding_info = exchange.fetch_funding_rate(sym)
             funding_rate = funding_info.get('fundingRate', 0)
             current_close = tickers[sym]['last']
             
-            if funding_rate > 0.0005: # 門檻：大於 0.05%
+            if funding_rate > 0.0005: 
                 rate_pct = funding_rate * 100
-                apr = rate_pct * 3 * 365 # 每天收3次，算成年化
+                apr = rate_pct * 3 * 365 
                 signals.append({
                     '幣種': sym.split(':')[0],
                     '最新價格': current_close,
@@ -64,8 +85,8 @@ def scan_market_and_ta():
                     'AI 判斷原因': f"💰 高額資金費率 ({rate_pct:.4f}%)，預估年化 {apr:.1f}%：多軍情緒狂熱，適合買入現貨並做空1倍合約，穩賺利息。"
                 })
 
-            # 2. 抓取 K 線進行技術分析
-            ohlcv = exchange.fetch_ohlcv(sym, '1h', limit=50)
+            # 2. 依照你選擇的時間週期抓取 K 線
+            ohlcv = exchange.fetch_ohlcv(sym, timeframe, limit=50)
             df = pd.DataFrame(ohlcv, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
             
             if len(df) >= 35:
@@ -90,19 +111,19 @@ def scan_market_and_ta():
                 
                 if rsi_val < 30 and current_close <= lower_band:
                     action = "🟢 建議買入 (做多)"
-                    reason = "恐慌拋售已達極值：RSI 嚴重超賣且觸及布林下軌，極易出現報復性反彈。"
+                    reason = f"恐慌拋售 ({timeframe_label})：RSI 嚴重超賣且觸及布林下軌，極易出現報復性反彈。"
                 
                 elif (macd_line > signal_line) and (prev_macd <= prev_signal) and (current_vol > vol_ma20 * 1.5):
                     action = "🟢 建議買入 (做多)"
-                    reason = "主力資金進場：MACD 剛形成黃金交叉，且伴隨資金爆量流入，上漲動能強勁。"
+                    reason = f"主力進場 ({timeframe_label})：MACD 剛形成黃金交叉，且伴隨資金爆量流入。"
                 
                 elif rsi_val > 70 and current_close >= upper_band:
                     action = "🔴 建議賣出 (做空)"
-                    reason = "多頭情緒過熱：RSI 嚴重超買且突破布林上軌，隨時面臨獲利了結賣壓。"
+                    reason = f"多頭過熱 ({timeframe_label})：RSI 嚴重超買且突破布林上軌，隨時面臨獲利了結。"
                 
                 elif (macd_line < signal_line) and (prev_macd >= prev_signal):
                     action = "🔴 建議賣出 (做空)"
-                    reason = "上漲動能衰竭：MACD 形成死亡交叉，趨勢可能面臨反轉向下。"
+                    reason = f"動能衰竭 ({timeframe_label})：MACD 形成死亡交叉，趨勢可能反轉。"
                 
                 if action:
                     signals.append({
@@ -125,16 +146,17 @@ def scan_market_and_ta():
 st.markdown(f"*(最後更新時間：{time.strftime('%Y-%m-%d %H:%M:%S')}，系統運作中...)*")
 st.markdown("---")
 
-df_market, df_signals = scan_market_and_ta()
+# 將選擇的時間週期傳入函數中
+df_market, df_signals = scan_market_and_ta(selected_timeframe)
 
 if df_market.empty:
     st.error("無法連線至交易所，請稍後再試。")
 else:
-    st.subheader("💡 AI 即時潛力幣與套利推薦")
+    st.subheader(f"💡 AI 即時潛力幣與套利推薦 (當前基準：{timeframe_label})")
     if not df_signals.empty:
         st.dataframe(df_signals, use_container_width=True, hide_index=True)
     else:
-        st.info("⚪ 目前市場前 80 大熱門幣種中，無明顯的極端買賣訊號或高額資金費率，建議耐心空手等待。")
+        st.info(f"⚪ 依據【{timeframe_label}】掃描前 80 大幣種，目前無明顯買賣訊號，建議空手等待。")
         
     st.markdown("---")
     
