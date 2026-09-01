@@ -16,7 +16,7 @@ def send_telegram_message(message):
 def main():
     exchange = ccxt.bingx({'enableRateLimit': True, 'options': {'defaultType': 'swap'}})
     now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-    print(f"[{now}] 啟動【傳統共振 + SMC 缺口】雙軌掃描...")
+    print(f"[{now}] 啟動【傳統共振 + SMC 缺口】雙軌掃描 (純加密貨幣版)...")
     
     try:
         tickers = exchange.fetch_tickers()
@@ -27,8 +27,17 @@ def main():
         print(f"取得行情失敗: {e}")
         return
 
+    # 🎯 建立美股、原物料、指數黑名單
+    blacklist = ['NVDA', 'TSLA', 'AAPL', 'MSFT', 'AMZN', 'GOOGL', 'META', 'COIN', 'SP500', 'NDX', 'DJI', 'GOLD', 'SILVER', 'NQ', 'BABA']
+
     for item in top_50:
         sym = item['symbol']
+        
+        # 🎯 黑名單過濾機制：擷取代幣名稱並比對
+        base_coin = sym.split('/')[0].split('-')[0].split(':')[0]
+        if base_coin in blacklist:
+            continue # 如果是股票或指數，直接跳過不分析
+            
         try:
             ohlcv = exchange.fetch_ohlcv(sym, '1h', limit=250)
             df = pd.DataFrame(ohlcv, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
@@ -75,15 +84,11 @@ def main():
                     if df['close'].iloc[-1] > df['open'].iloc[-1]: bull_reasons.append("🔥 成交量：爆量買盤")
                     else: bear_reasons.append("🔥 成交量：爆量砸盤")
                 
-                # 判定狀態
                 is_trad_bull = len(bull_reasons) >= 3
                 is_trad_bear = len(bear_reasons) >= 3
                 
                 # --- 3. 評估 SMC 缺口 (FVG) ---
-                # 利用近 3 根已完成的 K 線來尋找缺口 (索引 -4, -3, -2)
-                # 買方缺口：第一根的高點 < 第三根的低點
                 fvg_bull = (df['high'].iloc[-4] < df['low'].iloc[-2]) and (df['close'].iloc[-3] > df['open'].iloc[-3])
-                # 賣方缺口：第一根的低點 > 第三根的高點
                 fvg_bear = (df['low'].iloc[-4] > df['high'].iloc[-2]) and (df['close'].iloc[-3] < df['open'].iloc[-3])
                 
                 if fvg_bull:
@@ -97,7 +102,6 @@ def main():
                 # 終極判斷與發送通知
                 # ==========================
                 
-                # 【狀況 A】：雙重確認 (超級信號) -> 連發 3 次
                 if is_trad_bull and fvg_bull:
                     msg = (f"🚨🚨 **【終極多頭信號：雙劍合璧】** 🚨🚨\n"
                            f"🪙 幣種：`{sym}`\n"
@@ -113,7 +117,6 @@ def main():
                         time.sleep(0.5)
                     continue
 
-                # 【狀況 B】：純傳統多頭信號
                 elif is_trad_bull:
                     msg = (f"🟢 **【傳統多頭共振】**\n"
                            f"🪙 幣種：`{sym}`\n"
@@ -124,16 +127,13 @@ def main():
                            f"💰 **建議停利**：`{current_close + (atr*3):.4f}`")
                     send_telegram_message(msg)
                 
-                # 【狀況 C】：純 SMC 多頭信號
                 elif fvg_bull:
                     msg = (f"🐋 **【SMC 主力足跡 (多)】**\n"
                            f"🪙 幣種：`{sym}`\n"
                            f"發現主力暴拉留下的 **FVG (合理價值缺口)**！\n"
                            f"真空區間：`{fvg_gap_bottom:.4f}` ~ `{fvg_gap_top:.4f}`\n\n"
-                           f"🎯 **建議策略**：不要追高，掛限價單在缺口上緣 `{fvg_gap_top:.4f}` 等待價格回補。")
+                           f"🎯 **策略**：掛限價單在缺口上緣 `{fvg_gap_top:.4f}` 等待價格回補。")
                     send_telegram_message(msg)
-
-                # (做空的防守邏輯同理，為保持程式碼簡潔，重點呈現超級信號邏輯)
                 
         except Exception as e:
             pass
