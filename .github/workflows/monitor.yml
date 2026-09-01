@@ -1,9 +1,9 @@
 name: 資金費率監控機器人
 
 on:
+  workflow_dispatch:  # 這個保留，讓你隨時可以手動測試
   schedule:
-    - cron: '*/15 * * * *'
-  workflow_dispatch:
+    - cron: '*/15 * * * *'  # 這行就是靈魂！代表每 15 分鐘自動喚醒一次
 
 jobs:
   run-bot:
