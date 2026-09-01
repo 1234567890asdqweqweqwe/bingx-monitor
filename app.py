@@ -2,225 +2,155 @@ import streamlit as st
 import ccxt
 import pandas as pd
 import pandas_ta as ta
-import plotly.graph_objects as go
-from plotly.subplots import make_subplots
-import plotly.express as px
 import time
+from streamlit_autorefresh import st_autorefresh
 
 # ==========================================
-# 網頁基本設定
+# 網頁基本設定與自動刷新
 # ==========================================
-st.set_page_config(page_title="BingX 交易監控面板", layout="wide")
-st.title("🚀 BingX 新手專屬監控儀表板")
+st.set_page_config(page_title="AI 極簡看盤系統", layout="wide")
+st.title("🎯 AI 全市場動態監控系統")
+st.write("系統每 60 秒自動掃描一次市場，為您尋找最佳的進出場時機。")
+
+# 設定每 60000 毫秒 (60秒) 自動重整網頁，免手動點擊
+count = st_autorefresh(interval=60000, limit=None, key="auto_refresh")
 
 # ==========================================
-# 定義板塊與代表幣種字典
+# 核心掃描演算法
 # ==========================================
-SECTORS = {
-    "🐶 迷因幣 (Meme)": ["DOGE", "SHIB", "PEPE", "WIF", "BOME", "FLOKI", "BONK"],
-    "🤖 人工智慧 (AI)": ["FET", "RNDR", "WLD", "TAO", "AR", "NEAR", "GRT"],
-    "🚀 公鏈 (Layer 1)": ["BTC", "ETH", "SOL", "AVAX", "SUI", "APT", "SEI"],
-    "🎮 遊戲 (GameFi)": ["GALA", "PIXEL", "IMX", "RON", "YGG", "BIGTIME"],
-    "🏦 去中心化金融 (DeFi)": ["UNI", "LINK", "AAVE", "MKR", "CRV", "RUNE"]
-}
-
-# ==========================================
-# 側邊欄設定
-# ==========================================
-st.sidebar.header("設定參數")
-symbol = st.sidebar.selectbox("選擇交易對", ["BTC/USDT:USDT", "ETH/USDT:USDT", "SOL/USDT:USDT"])
-timeframe = st.sidebar.selectbox("選擇 K 線週期", ["15m", "1h", "4h", "1d"], index=2)
-refresh_btn = st.sidebar.button("🔄 立即刷新數據")
-
-# ==========================================
-# 資料抓取函數 (設定快取)
-# ==========================================
-@st.cache_data(ttl=60)
-def get_market_data(symbol, timeframe):
+@st.cache_data(ttl=50) # 快取 50 秒，配合 60 秒刷新
+def scan_market_and_ta():
     exchange = ccxt.bingx({'enableRateLimit': True, 'options': {'defaultType': 'swap'}})
-    ticker = exchange.fetch_ticker(symbol)
-    funding_info = exchange.fetch_funding_rate(symbol)
-    ohlcv = exchange.fetch_ohlcv(symbol, timeframe, limit=100)
-    df = pd.DataFrame(ohlcv, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
-    df['datetime'] = pd.to_datetime(df['timestamp'], unit='ms') + pd.Timedelta(hours=8)
     
-    # 計算指標
-    df.ta.ema(length=20, append=True)
-    df.ta.ema(length=50, append=True)
-    df.ta.rsi(length=14, append=True)
-    df['Vol_MA20'] = df['volume'].rolling(window=20).mean()
-    df['Volume_Spike'] = df['volume'] > (df['Vol_MA20'] * 2)
-    return df, ticker, funding_info
-
-@st.cache_data(ttl=60)
-def get_sector_data():
-    exchange = ccxt.bingx({'enableRateLimit': True, 'options': {'defaultType': 'swap'}})
-    tickers = exchange.fetch_tickers()
-    sector_stats = []
-    
-    for sector_name, coins in SECTORS.items():
-        total_volume = 0
-        total_change = 0
-        valid_count = 0
-        for coin in coins:
-            sym = f"{coin}/USDT:USDT"
-            if sym in tickers:
-                data = tickers[sym]
-                if data.get('quoteVolume') and data.get('percentage') is not None:
-                    total_volume += data['quoteVolume']
-                    total_change += data['percentage']
-                    valid_count += 1
-                    
-        if valid_count > 0:
-            sector_stats.append({
-                'Sector': sector_name,
-                'Volume': total_volume,
-                'Avg_Change': total_change / valid_count
-            })
-            
-    df_sector = pd.DataFrame(sector_stats).sort_values(by='Avg_Change', ascending=True)
-    return df_sector
-
-# ==========================================
-# 主畫面渲染
-# ==========================================
-try:
-    with st.spinner('正在從 BingX 讀取最新行情...'):
-        df, ticker, funding_info = get_market_data(symbol, timeframe)
-    
-    latest = df.iloc[-1]
-    
-    # --- 區塊一：核心數據看板 ---
-    col1, col2, col3, col4 = st.columns(4)
-    col1.metric("最新價格 (USDT)", f"{ticker.get('last'):,}")
-    col2.metric("24H 漲跌幅", f"{ticker.get('percentage'):.2f}%")
-    f_rate = funding_info.get('fundingRate', 0) * 100
-    col3.metric("當前資金費率", f"{f_rate:.4f}%")
-    col4.metric("即時 RSI (14)", f"{latest['RSI_14']:.2f}")
-
-    st.markdown("---")
-    
-    # --- 區塊二：板塊資金流向圖表 ---
-    st.subheader("🌍 當前市場板塊熱度與資金流向")
     try:
-        df_sector = get_sector_data()
-        df_sector['Volume_M'] = df_sector['Volume'] / 1_000_000 
-        col_bar, col_scatter = st.columns(2)
-        
-        # 左邊長條圖
-        with col_bar:
-            colors = ['#00cc96' if val >= 0 else '#ef553b' for val in df_sector['Avg_Change']]
-            fig_sector = go.Figure(go.Bar(
-                x=df_sector['Avg_Change'], y=df_sector['Sector'],
-                orientation='h', marker_color=colors,
-                text=[f"{val:.2f}%" for val in df_sector['Avg_Change']], textposition='auto'
-            ))
-            fig_sector.update_layout(title="📊 板塊平均漲跌幅", height=400, margin=dict(l=0, r=0, t=40, b=0), xaxis_title="平均漲跌幅 (%)")
-            st.plotly_chart(fig_sector, use_container_width=True)
-
-        # 右邊氣泡圖
-        with col_scatter:
-            fig_scatter = px.scatter(
-                df_sector, x='Avg_Change', y='Volume_M', text='Sector', size='Volume_M',
-                color='Avg_Change', color_continuous_scale=['#ef553b', '#cccccc', '#00cc96'],
-                color_continuous_midpoint=0, labels={'Avg_Change': '平均漲跌幅 (%)', 'Volume_M': '成交資金 (百萬 USDT)'}
-            )
-            fig_scatter.update_layout(title="🎈 板塊資金量 vs 漲跌幅", height=400, margin=dict(l=0, r=0, t=40, b=0), coloraxis_showscale=False)
-            fig_scatter.update_traces(textposition='top center')
-            st.plotly_chart(fig_scatter, use_container_width=True)
-            
+        # 1. 抓取全市場即時行情
+        tickers = exchange.fetch_tickers()
     except Exception as e:
-        st.warning(f"板塊資料讀取中... {e}")
+        return pd.DataFrame(), pd.DataFrame()
 
-    st.markdown("---")
-
-    # --- 區塊三：策略訊號指示燈 ---
-    st.subheader("💡 當前策略訊號判斷")
-    s_col1, s_col2, s_col3 = st.columns(3)
+    all_coins = []
+    symbol_vol = []
     
-    with s_col1:
-        if latest['RSI_14'] < 30: st.success("🟢 RSI 處於超賣區 (跌深可能反彈)")
-        elif latest['RSI_14'] > 70: st.error("🔴 RSI 處於超買區 (短線過熱注意)")
-        else: st.info("⚪ RSI 處於中性區間")
-        
-    with s_col2:
-        if latest['EMA_20'] > latest['EMA_50']: st.success("🟢 均線多頭排列 (短線強勢)")
-        else: st.error("🔴 均線空頭排列 (短線弱勢)")
-        
-    with s_col3:
-        if latest['Volume_Spike']:
-            if latest['close'] > latest['open']: st.warning("🔥 出現爆量上漲！(買盤積極介入)")
-            else: st.error("⚠️ 出現爆量下跌！(賣盤大舉倒貨)")
-        else: st.info("⚪ 正常成交量")
-
-    st.markdown("---")
-
-    # --- 區塊四：互動式 K 線圖 ---
-    st.subheader("📈 互動式行情圖表")
-    fig = make_subplots(rows=2, cols=1, shared_xaxes=True, vertical_spacing=0.05, row_heights=[0.7, 0.3])
-
-    fig.add_trace(go.Candlestick(x=df['datetime'], open=df['open'], high=df['high'], low=df['low'], close=df['close'], name="K線"), row=1, col=1)
-    fig.add_trace(go.Scatter(x=df['datetime'], y=df['EMA_20'], line=dict(color='orange', width=2), name="EMA 20"), row=1, col=1)
-    fig.add_trace(go.Scatter(x=df['datetime'], y=df['EMA_50'], line=dict(color='blue', width=2), name="EMA 50"), row=1, col=1)
-
-    colors_vol = ['green' if row['close'] >= row['open'] else 'red' for index, row in df.iterrows()]
-    fig.add_trace(go.Bar(x=df['datetime'], y=df['volume'], marker_color=colors_vol, name="成交量"), row=2, col=1)
-    fig.add_trace(go.Scatter(x=df['datetime'], y=df['Vol_MA20'], line=dict(color='purple', width=2), name="20均量"), row=2, col=1)
-
-    fig.update_layout(xaxis_rangeslider_visible=False, height=600, margin=dict(l=0, r=0, t=30, b=0))
-    st.plotly_chart(fig, use_container_width=True)
-
-    st.markdown("---")
-
-    # --- 區塊五：全市場掃描 ---
-    st.subheader("🔍 全市場超賣潛力幣種掃描 (Top 20 主流幣)")
-    st.caption("自動掃描當前成交量前 20 大的合約幣種，尋找 RSI < 30 的超賣機會。")
-
-    if st.button("🚀 啟動掃描 (約需 10~15 秒)"):
-        scan_exchange = ccxt.bingx({'enableRateLimit': True, 'options': {'defaultType': 'swap'}})
-        tickers = scan_exchange.fetch_tickers()
-        symbol_vol = []
-        
-        for sym, data in tickers.items():
-            if ':' in sym and 'quoteVolume' in data and data['quoteVolume'] is not None:
-                symbol_vol.append({'symbol': sym, 'volume': data['quoteVolume']})
-                
-        top_20_symbols = sorted(symbol_vol, key=lambda x: x['volume'], reverse=True)[:20]
-        results = []
-        progress_bar = st.progress(0, text="準備掃描...")
-        
-        for i, item in enumerate(top_20_symbols):
-            sym = item['symbol']
-            progress_bar.progress((i + 1) / 20, text=f"正在掃描 {sym} ({i+1}/20)...")
+    # 整理全市場清單
+    for sym, data in tickers.items():
+        if sym.endswith(':USDT') and data.get('quoteVolume') and data.get('percentage') is not None:
+            all_coins.append({
+                '幣種': sym.split(':')[0],
+                '最新價格': data['last'],
+                '24H 漲跌幅(%)': data['percentage'],
+                '24H 成交額': data['quoteVolume']
+            })
+            symbol_vol.append({'symbol': sym, 'volume': data['quoteVolume']})
             
-            try:
-                ohlcv = scan_exchange.fetch_ohlcv(sym, timeframe, limit=30)
-                scan_df = pd.DataFrame(ohlcv, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
-                
-                if len(scan_df) >= 15:
-                    scan_df.ta.rsi(length=14, append=True)
-                    latest_rsi = scan_df['RSI_14'].iloc[-1]
-                    latest_close = scan_df['close'].iloc[-1]
-                    
-                    if latest_rsi < 30:
-                        results.append({
-                            '幣種': sym.split(':')[0],
-                            '最新價格 (USDT)': latest_close,
-                            'RSI (14)': round(latest_rsi, 2),
-                            '24H 成交額 (USDT)': f"{item['volume']:,.0f}"
-                        })
-            except Exception as e:
-                continue
-                
-            time.sleep(0.1) 
+    df_all_market = pd.DataFrame(all_coins).sort_values(by='24H 漲跌幅(%)', ascending=False)
+    
+    # 2. 篩選前 80 大熱門幣種進行深度技術分析 (避免被交易所封鎖 API)
+    top_80 = sorted(symbol_vol, key=lambda x: x['volume'], reverse=True)[:80]
+    
+    signals = []
+    
+    for item in top_80:
+        sym = item['symbol']
+        try:
+            # 抓取 1 小時 K 線
+            ohlcv = exchange.fetch_ohlcv(sym, '1h', limit=50)
+            df = pd.DataFrame(ohlcv, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
             
-        progress_bar.empty()
+            if len(df) >= 35:
+                # 計算 RSI (14)
+                df.ta.rsi(length=14, append=True)
+                rsi_val = df['RSI_14'].iloc[-1]
+                
+                # 計算 MACD
+                macd = df.ta.macd(fast=12, slow=26, signal=9)
+                macd_line = macd.iloc[-1, 0]
+                signal_line = macd.iloc[-1, 2]
+                prev_macd = macd.iloc[-2, 0]
+                prev_signal = macd.iloc[-2, 2]
+                
+                # 計算 布林通道 (Bollinger Bands)
+                bbands = df.ta.bbands(length=20, std=2)
+                lower_band = bbands.iloc[-1, 0] # BBL
+                upper_band = bbands.iloc[-1, 2] # BBU
+                
+                # 計算成交量均線
+                vol_ma20 = df['volume'].rolling(20).mean().iloc[-1]
+                current_vol = df['volume'].iloc[-1]
+                current_close = df['close'].iloc[-1]
+                
+                # ---- 判斷買入/賣出訊號與原因 ----
+                action = None
+                reason = None
+                
+                # 【買入條件 1】底層反彈：RSI 超賣 + 價格跌破布林下軌
+                if rsi_val < 30 and current_close <= lower_band:
+                    action = "🟢 建議買入 (做多)"
+                    reason = "恐慌拋售已達極值：RSI 嚴重超賣且觸及布林下軌，極易出現報復性反彈。"
+                
+                # 【買入條件 2】動能爆發：MACD 黃金交叉 + 成交量放大
+                elif (macd_line > signal_line) and (prev_macd <= prev_signal) and (current_vol > vol_ma20 * 1.5):
+                    action = "🟢 建議買入 (做多)"
+                    reason = "主力資金進場：MACD 剛形成黃金交叉，且伴隨資金爆量流入，上漲動能強勁。"
+                
+                # 【賣出條件 1】短線過熱：RSI 超買 + 價格突破布林上軌
+                elif rsi_val > 70 and current_close >= upper_band:
+                    action = "🔴 建議賣出 (做空)"
+                    reason = "多頭情緒過熱：RSI 嚴重超買且突破布林上軌，隨時面臨獲利了結賣壓。"
+                
+                # 【賣出條件 2】動能衰竭：MACD 死亡交叉
+                elif (macd_line < signal_line) and (prev_macd >= prev_signal):
+                    action = "🔴 建議賣出 (做空)"
+                    reason = "上漲動能衰竭：MACD 形成死亡交叉，趨勢可能面臨反轉向下。"
+                
+                if action:
+                    signals.append({
+                        '幣種': sym.split(':')[0],
+                        '最新價格': current_close,
+                        '狀態': action,
+                        'AI 判斷原因 (技術分析)': reason
+                    })
+        except Exception:
+            pass
         
-        if len(results) > 0:
-            st.success(f"掃描完成！在 Top 20 主流幣中，共發現 {len(results)} 個超賣標的：")
-            st.dataframe(pd.DataFrame(results), use_container_width=True)
-        else:
-            st.info("掃描完成！目前市場情緒正常，前 20 大主流幣中沒有發現 RSI < 30 的標的。")
+        # 微小延遲保護 API
+        time.sleep(0.05)
+        
+    df_signals = pd.DataFrame(signals)
+    return df_all_market, df_signals
 
-except Exception as e:
-    st.error(f"讀取資料時發生錯誤：{e}")
+# ==========================================
+# 畫面渲染區塊
+# ==========================================
+st.markdown(f"*(最後更新時間：{time.strftime('%Y-%m-%d %H:%M:%S')}，系統運作中...)*")
+st.markdown("---")
+
+df_market, df_signals = scan_market_and_ta()
+
+if df_market.empty:
+    st.error("無法連線至交易所，請稍後再試。")
+else:
+    # 區塊 1：AI 主動推薦清單
+    st.subheader("💡 AI 即時潛力幣推薦 (依據 MACD、RSI、布林通道)")
+    if not df_signals.empty:
+        # 將 DataFrame 顯示優化，隱藏左側數字索引
+        st.dataframe(df_signals, use_container_width=True, hide_index=True)
+    else:
+        st.info("⚪ 目前市場前 80 大熱門幣種中，無明顯的極端買賣訊號，建議耐心空手等待。")
+        
+    st.markdown("---")
+    
+    # 區塊 2：全市場漲跌榜 (左邊漲幅榜，右邊跌幅榜)
+    st.subheader("📊 BingX 全市場漲跌排行榜")
+    col1, col2 = st.columns(2)
+    
+    with col1:
+        st.markdown("**🔥 24H 漲幅排行榜 (Top 15)**")
+        df_gainers = df_market.head(15).copy()
+        df_gainers['24H 漲跌幅(%)'] = df_gainers['24H 漲跌幅(%)'].apply(lambda x: f"+{x:.2f}%")
+        st.dataframe(df_gainers[['幣種', '最新價格', '24H 漲跌幅(%)']], use_container_width=True, hide_index=True)
+        
+    with col2:
+        st.markdown("**❄️ 24H 跌幅排行榜 (Top 15)**")
+        df_losers = df_market.tail(15).sort_values(by='24H 漲跌幅(%)', ascending=True).copy()
+        df_losers['24H 漲跌幅(%)'] = df_losers['24H 漲跌幅(%)'].apply(lambda x: f"{x:.2f}%")
+        st.dataframe(df_losers[['幣種', '最新價格', '24H 漲跌幅(%)']], use_container_width=True, hide_index=True)
