@@ -63,66 +63,54 @@ def main():
                 vol_ma20 = df['volume'].rolling(20).mean().iloc[-1]
                 atr = df['ATRr_14'].iloc[-1]
                 
-                # --- 2. 傳統多空共振 ---
-                bull_reasons = []
-                
-                if ema50 > ema200: bull_reasons.append("📈 趨勢：EMA 50 > 200")
-                if macd_line > signal_line: bull_reasons.append("⚡ 動能：MACD 多頭")
-                if rsi < 50: bull_reasons.append("📉 震盪：RSI 具備上漲空間")
-                if current_close <= lower_band * 1.02: bull_reasons.append("🛡️ 支撐：回踩布林下軌")
-                if current_vol > vol_ma20 * 1.5 and df['close'].iloc[-1] > df['open'].iloc[-1]: 
-                    bull_reasons.append("🔥 成交量：爆量買盤")
-                
-                is_trad_bull = len(bull_reasons) >= 3
-                
-                # --- 3. SMC 缺口 (FVG) ---
+                # --- 2. SMC 缺口 (FVG) 判斷 ---
+                # 買方缺口 (看漲做多)
                 fvg_bull = (df['high'].iloc[-4] < df['low'].iloc[-2]) and (df['close'].iloc[-3] > df['open'].iloc[-3])
+                # 賣方缺口 (看跌做空)
+                fvg_bear = (df['low'].iloc[-4] > df['high'].iloc[-2]) and (df['close'].iloc[-3] < df['open'].iloc[-3])
                 
+                fvg_bull_gap_top = 0
+                fvg_bull_gap_bottom = 0
+                fvg_bear_gap_top = 0
+                fvg_bear_gap_bottom = 0
+
                 if fvg_bull:
-                    fvg_gap_top = df['low'].iloc[-2]
-                    fvg_gap_bottom = df['high'].iloc[-4]
+                    fvg_bull_gap_top = df['low'].iloc[-2]
+                    fvg_bull_gap_bottom = df['high'].iloc[-4]
+                if fvg_bear:
+                    fvg_bear_gap_top = df['low'].iloc[-4]  # 賣方缺口的上緣
+                    fvg_bear_gap_bottom = df['high'].iloc[-2] # 賣方缺口的下緣
 
                 # ==========================
-                # 終極判斷與發送通知
+                # 發送 SMC 專屬通知
                 # ==========================
                 
-                # 【狀況 A】：雙重確認 (連發 3 次)
-                if is_trad_bull and fvg_bull:
-                    msg = (f"🚨🚨 **【終極多頭信號：雙劍合璧】** 🚨🚨\n"
+                # 【狀況 A】：SMC 建議做多
+                if fvg_bull:
+                    msg = (f"🐋 **【SMC 主力足跡雷達】**\n"
                            f"🪙 幣種：`{sym}`\n"
-                           f"⚠️ 注意：傳統技術面與 SMC 同時看漲！\n\n"
-                           f"✅ **傳統共振 ({len(bull_reasons)}/5)**\n" + "\n".join(bull_reasons) + "\n\n"
-                           f"✅ **SMC 發現買方缺口 (FVG)**\n"
-                           f"真空區間：`{fvg_gap_bottom:.4f}` ~ `{fvg_gap_top:.4f}`\n\n"
-                           f"🎯 **建議進場 (掛單買入)**：`{fvg_gap_top:.4f}`\n"
-                           f"🛑 **建議停損 (跌破缺口)**：`{fvg_gap_bottom:.4f}`\n"
-                           f"💰 **建議賣出 (停利目標)**：`{fvg_gap_top + (atr*3):.4f}`")
-                    for _ in range(3):
-                        send_telegram_message(msg)
-                        time.sleep(0.5)
-                    continue
-
-                # 【狀況 B】：純傳統多頭信號
-                elif is_trad_bull:
-                    msg = (f"🟢 **【傳統多頭共振】**\n"
-                           f"🪙 幣種：`{sym}`\n"
-                           f"📊 達成指標：{len(bull_reasons)}/5 共振\n\n"
-                           f"**【入局理由】**\n" + "\n".join(bull_reasons) + "\n\n"
-                           f"🎯 **建議進場 (市價)**：`{current_close}`\n"
-                           f"🛑 **建議停損**：`{current_close - (atr*1.5):.4f}`\n"
-                           f"💰 **建議賣出 (停利)**：`{current_close + (atr*3):.4f}`")
+                           f"🟢 **建議方向：做多 (Long)** 🟢\n\n"
+                           f"**【分析依據】**\n"
+                           f"發現主力暴拉留下的 **向上 FVG 缺口**！\n"
+                           f"真空區間：`{fvg_bull_gap_bottom:.4f}` ~ `{fvg_bull_gap_top:.4f}`\n\n"
+                           f"🎯 **建議進場 (掛限價單做多)**：`{fvg_bull_gap_top:.4f}`\n"
+                           f"🛑 **建議停損 (跌破缺口)**：`{fvg_bull_gap_bottom:.4f}`\n"
+                           f"💰 **建議賣出 (停利目標)**：`{fvg_bull_gap_top + (atr*3):.4f}`\n\n"
+                           f"*(絕對不追高，請於進場價設定限價買單等待價格回落)*")
                     send_telegram_message(msg)
                 
-                # 【狀況 C】：純 SMC 多頭信號 (新增賣出與停損價)
-                elif fvg_bull:
-                    msg = (f"🐋 **【SMC 主力足跡 (多)】**\n"
+                # 【狀況 B】：SMC 建議做空 (補齊做空邏輯)
+                elif fvg_bear:
+                    msg = (f"🐋 **【SMC 主力足跡雷達】**\n"
                            f"🪙 幣種：`{sym}`\n"
-                           f"發現主力暴拉留下的 **FVG (合理價值缺口)**！\n"
-                           f"此區間代表機構強烈買盤，極高機率反彈。\n\n"
-                           f"🎯 **建議進場 (掛單買入)**：`{fvg_gap_top:.4f}`\n"
-                           f"🛑 **建議停損 (跌破缺口)**：`{fvg_gap_bottom:.4f}`\n"
-                           f"💰 **建議賣出 (停利目標)**：`{fvg_gap_top + (atr*3):.4f}`\n\n"
-                           f"*(策略：絕對不追高，請於進場價設定限價單等待價格回落)*")
+                           f"🔴 **建議方向：做空 (Short)** 🔴\n\n"
+                           f"**【分析依據】**\n"
+                           f"發現主力暴力砸盤留下的 **向下 FVG 缺口**！\n"
+                           f"真空區間：`{fvg_bear_gap_bottom:.4f}` ~ `{fvg_bear_gap_top:.4f}`\n\n"
+                           f"🎯 **建議進場 (掛限價單做空)**：`{fvg_bear_gap_bottom:.4f}`\n"
+                           f"🛑 **建議停損 (突破缺口)**：`{fvg_bear_gap_top:.4f}`\n"
+                           f"💰 **建議平倉 (停利目標)**：`{fvg_bear_gap_bottom - (atr*3):.4f}`\n\n"
+                           f"*(絕對不追低，請於進場價設定限價空單等待價格反彈)*")
                     send_telegram_message(msg)
                 
         except Exception as e:
