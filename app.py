@@ -7,7 +7,7 @@ from datetime import datetime, timezone
 from streamlit_autorefresh import st_autorefresh
 
 st.set_page_config(page_title="AI 5M 極速雷達與專屬操盤顧問", layout="centered")
-st.title("🎯 AI 操盤系統 (SMC 雷達 + 顧問)")
+st.title("🎯 AI 操盤系統 (全市場掃描版)")
 
 # ==========================================
 # 共用核心演算法
@@ -23,9 +23,9 @@ def get_overall_sr(df_1h, current_price):
     return (min(res_list) if res_list else df_1h['high'].max(), 
             max(sup_list) if sup_list else df_1h['low'].min())
 
-@st.cache_data(ttl=60)
+@st.cache_data(ttl=120)  # 因為全市場掃描較久，快取時間延長至 120 秒
 def fetch_market_data():
-    """抓取全市場資料：包含下拉選單的全幣種，以及供雷達掃描的前40大"""
+    """抓取全市場資料：解除 40 大限制，獲取所有有效 USDT 交易對"""
     exchange = ccxt.bingx({'enableRateLimit': True, 'options': {'defaultType': 'swap'}})
     try: tickers = exchange.fetch_tickers()
     except: return [], []
@@ -41,10 +41,11 @@ def fetch_market_data():
                 all_symbols.append(sym)
                 symbol_vol.append({'symbol': sym, 'volume': data['quoteVolume'], 'last': data['last'], 'pct': data.get('percentage', 0)})
     
-    all_symbols = sorted(all_symbols) # 全幣種按字母排序 (給 AI 顧問用)
-    top_40 = sorted(symbol_vol, key=lambda x: x['volume'], reverse=True)[:40] # 活躍幣種 (給雷達用)
+    all_symbols = sorted(all_symbols)
+    # 解除切片限制，回傳所有按照成交量排序的幣種
+    all_active_markets = sorted(symbol_vol, key=lambda x: x['volume'], reverse=True) 
     
-    return all_symbols, top_40
+    return all_symbols, all_active_markets
 
 def analyze_single_coin(sym):
     """AI 顧問專用：單幣種深度分析"""
@@ -76,26 +77,33 @@ def analyze_single_coin(sym):
 # ==========================================
 # 介面渲染與掃描區塊
 # ==========================================
-all_symbols, top_40_market = fetch_market_data()
+all_symbols, all_active_markets = fetch_market_data()
 
-tab1, tab2 = st.tabs(["📡 5分鐘極速雷達 (自動推薦)", "🤖 AI 專屬操盤顧問 (自選幣種)"])
+tab1, tab2 = st.tabs(["📡 全市場極速雷達 (自動推薦)", "🤖 AI 專屬操盤顧問 (自選幣種)"])
 
 # ------------------------------------------
-# TAB 1: 5分鐘極速雷達 (自動推薦進場)
+# TAB 1: 全市場極速雷達 (自動推薦進場)
 # ------------------------------------------
 with tab1:
-    count = st_autorefresh(interval=60000, limit=None, key="auto_refresh")
-    st.caption(f"🔄 網頁每 60 秒自動更新 | 專注掃描市場最活躍前 40 大幣種")
-    st.write("利用 5 分鐘 K 線尋找最佳進場區間，並由 1H 歷史防線確保盈虧比。")
+    # 因掃描時間變長，網頁刷新頻率改為 120,000 毫秒 (2分鐘)
+    count = st_autorefresh(interval=120000, limit=None, key="auto_refresh")
+    st.caption(f"🔄 網頁每 2 分鐘自動更新 | 當前共監控 {len(all_active_markets)} 個幣種")
+    st.write("正對全市場進行地毯式掃描，絕不錯過任何 SMC 進場機會。")
     
     signals = []
     exchange = ccxt.bingx({'enableRateLimit': True, 'options': {'defaultType': 'swap'}})
     
-    with st.spinner('📡 正在掃描全市場推薦機會，請稍候...'):
-        for item in top_40_market:
+    if len(all_active_markets) > 0:
+        progress_text = f"📡 正在深度掃描全市場 {len(all_active_markets)} 個幣種，請耐心稍候..."
+        my_bar = st.progress(0, text=progress_text)
+        
+        total_coins = len(all_active_markets)
+        for i, item in enumerate(all_active_markets):
             sym = item['symbol']
+            # 更新進度條
+            my_bar.progress((i + 1) / total_coins, text=f"📡 掃描進度：{i+1} / {total_coins} ({sym})")
+            
             try:
-                # 取得數據
                 ohlcv_4h = exchange.fetch_ohlcv(sym, '4h', limit=10)
                 df_4h = pd.DataFrame(ohlcv_4h, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
                 df_4h['datetime'] = pd.to_datetime(df_4h['timestamp'], unit='ms')
@@ -144,10 +152,12 @@ with tab1:
                         signals.append({'幣': sym, '方向': '🟢 做多', '進場': f"`{e_0382:.4f}` 回踩", '停損': sl, '停利': tp, '建議': "🌟 動能突破，等待回踩。"})
             except:
                 pass
-            time.sleep(0.05)
+            time.sleep(0.05) # 必須保留微小暫停避免 API 封鎖
+            
+        my_bar.empty() # 掃描完成後隱藏進度條
             
     if len(signals) > 0:
-        st.subheader("💡 AI 推薦進場清單")
+        st.subheader(f"💡 發現 {len(signals)} 個 AI 推薦進場機會")
         for sig in signals:
             card = st.success if "多" in sig['方向'] else st.error
             card(f"**{sig['幣']}** | {sig['方向']}\n\n"
@@ -155,7 +165,7 @@ with tab1:
                  f"🛑 **停損**：`{sig['停損']:.4f}` | 💰 **停利**：`{sig['停利']:.4f}`\n\n"
                  f"💡 {sig['建議']}")
     else:
-        st.info("⚪ 目前前 40 大幣種無合適進場訊號。安全第一，請耐心等待。")
+        st.info("⚪ 目前全市場數百個幣種皆無合適進場訊號。安全第一，請耐心等待。")
 
 # ------------------------------------------
 # TAB 2: AI 操盤顧問 (自選幣種互動問答)
@@ -167,7 +177,6 @@ with tab2:
     if all_symbols:
         col1, col2 = st.columns(2)
         with col1:
-            # 這裡的 all_symbols 包含了幾百個幣種，你可以隨意搜尋！
             target_coin = st.selectbox("你想操作哪個幣？(可直接輸入搜尋)", all_symbols)
         with col2:
             user_intent = st.selectbox("你的計畫是？", ["我想做多 (Long) 🟢", "我想做空 (Short) 🔴"])
