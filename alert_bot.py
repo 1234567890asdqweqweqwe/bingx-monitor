@@ -27,7 +27,6 @@ def main():
         print(f"取得行情失敗: {e}")
         return
 
-    # 嚴格過濾傳統股市、指數
     blacklist = ['NVDA', 'TSLA', 'AAPL', 'MSFT', 'AMZN', 'GOOGL', 'META', 'COIN', 'SP500', 'NDX', 'DJI', 'GOLD', 'SILVER', 'NQ', 'BABA']
 
     for item in top_50:
@@ -37,7 +36,6 @@ def main():
             continue
             
         try:
-            # 獲取資料
             ohlcv_4h = exchange.fetch_ohlcv(sym, '4h', limit=10)
             df_4h = pd.DataFrame(ohlcv_4h, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
             df_4h['datetime'] = pd.to_datetime(df_4h['timestamp'], unit='ms')
@@ -51,26 +49,22 @@ def main():
             ohlcv_15m = exchange.fetch_ohlcv(sym, '15m', limit=250)
             df_15m = pd.DataFrame(ohlcv_15m, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
             current_close_15m = df_15m['close'].iloc[-2]
-            current_now_15m = df_15m['close'].iloc[-1] # 最即時現價
+            current_now_15m = df_15m['close'].iloc[-1] 
             
             ohlcv_5m = exchange.fetch_ohlcv(sym, '5m', limit=50)
             df_5m = pd.DataFrame(ohlcv_5m, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
             current_close_5m = df_5m['close'].iloc[-2]
             prev_close_5m = df_5m['close'].iloc[-3]
 
-            # ==========================================
-            # 引擎 A：4H 區間假突破 (預測反轉)
-            # ==========================================
+            # --- 引擎 A：4H 區間假突破 (預測反轉) ---
             today_date = datetime.now(timezone.utc).date()
             first_4h = df_4h[(df_4h['datetime'].dt.date == today_date) & (df_4h['datetime'].dt.hour == 0)]
             range_high = first_4h['high'].values[0] if not first_4h.empty else None
             range_low = first_4h['low'].values[0] if not first_4h.empty else None
             
             if range_high and range_low:
-                # 預測上漲 (做多)
                 if prev_close_5m < range_low and current_close_5m > range_low:
                     sl_price = df_5m['low'].iloc[-5:-1].min()
-                    # 給出進場區間：現價 ~ 4H底部線
                     entry_zone_high = current_now_15m
                     entry_zone_low = range_low
                     risk = entry_zone_high - sl_price
@@ -87,7 +81,6 @@ def main():
                         send_telegram_message(msg)
                         time.sleep(1)
                         
-                # 預測下跌 (做空)
                 elif prev_close_5m > range_high and current_close_5m < range_high:
                     sl_price = df_5m['high'].iloc[-5:-1].max()
                     entry_zone_low = current_now_15m
@@ -106,13 +99,10 @@ def main():
                         send_telegram_message(msg)
                         time.sleep(1)
 
-            # ==========================================
-            # 引擎 B：淺回撤動能預測 (將 0.618 改為 0.382~0.618 區間)
-            # ==========================================
+            # --- 引擎 B：淺回撤動能預測 (0.382~0.618 區間) ---
             macd = df_15m.ta.macd(fast=12, slow=26, signal=9)
             macd_line = macd.iloc[-2, 0]
             signal_line = macd.iloc[-2, 2]
-            
             recent_high = df_15m['high'].iloc[-15:-2].max()
             recent_low = df_15m['low'].iloc[-15:-2].min()
             bos_bull = current_close_15m > recent_high
@@ -120,7 +110,6 @@ def main():
             
             if macd_line > signal_line and bos_bull:
                 swing_high = df_15m['high'].iloc[-3:].max()
-                # 預測強勢上漲，抓 0.382 (淺回調) 到 0.618 (深回調) 的區間
                 entry_0382 = swing_high - 0.382 * (swing_high - recent_low)
                 entry_0618 = swing_high - 0.618 * (swing_high - recent_low)
                 sl_price = recent_low * 0.998
@@ -151,9 +140,7 @@ def main():
                 send_telegram_message(msg)
                 time.sleep(1)
 
-            # ==========================================
-            # 引擎 C：7 星全指標大共振 (直接市價進場預測)
-            # ==========================================
+            # --- 引擎 C：7 星全指標大共振 ---
             df_15m.ta.adx(length=14, append=True)
             df_15m.ta.psar(append=True)
             bbands = df_15m.ta.bbands(length=20, std=2)
@@ -162,12 +149,10 @@ def main():
             adx = df_15m['ADX_14'].iloc[-2] if 'ADX_14' in df_15m.columns else 0
             dips = df_15m['DMP_14'].iloc[-2] if 'DMP_14' in df_15m.columns else 0
             dins = df_15m['DMN_14'].iloc[-2] if 'DMN_14' in df_15m.columns else 0
-            
             psar_col = [c for c in df_15m.columns if c.startswith('PSARl')]
             psars_col = [c for c in df_15m.columns if c.startswith('PSARs')]
             psar_bull = pd.notna(df_15m[psar_col[0]].iloc[-2]) if psar_col else False
             psar_bear = pd.notna(df_15m[psars_col[0]].iloc[-2]) if psars_col else False
-
             upper_band = bbands.iloc[-2, 2]
             lower_band = bbands.iloc[-2, 0]
             atr = df_15m['ATRr_14'].iloc[-2]
@@ -195,7 +180,6 @@ def main():
             if current_close_15m <= lower_band: bear_factors.append("📊 跌破布林下軌")
             if fvg_bear: bear_factors.append("🐋 主力賣方缺口")
 
-            # 當 6 項指標共振時，動能極強，不再等回調，直接建議市價進場！
             if len(bull_factors) >= 6:
                 msg = (f"🏆 **【走勢預測：強烈多方共振，極高機率單邊暴漲】**\n"
                        f"🪙 `{sym}` | 🟢 **強勢做多**\n\n"
