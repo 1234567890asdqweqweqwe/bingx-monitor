@@ -7,7 +7,7 @@ from datetime import datetime, timezone
 from streamlit_autorefresh import st_autorefresh
 
 st.set_page_config(page_title="AI 5M 極速雷達與專屬操盤顧問", layout="centered")
-st.title("🎯 AI 操盤系統 (Top 100 極速版)")
+st.title("🎯 AI 操盤系統 (Top 50 極速版)")
 
 # ==========================================
 # 共用核心演算法
@@ -25,7 +25,7 @@ def get_overall_sr(df_1h, current_price):
 
 @st.cache_data(ttl=60)
 def fetch_market_data():
-    """抓取全市場資料：顧問選單保留全幣種，雷達僅抓取前 100 大"""
+    """抓取全市場資料：顧問選單保留全幣種，雷達僅抓取前 50 大"""
     exchange = ccxt.bingx({'enableRateLimit': True, 'options': {'defaultType': 'swap'}})
     try: tickers = exchange.fetch_tickers()
     except: return [], []
@@ -42,10 +42,10 @@ def fetch_market_data():
                 symbol_vol.append({'symbol': sym, 'volume': data['quoteVolume'], 'last': data['last'], 'pct': data.get('percentage', 0)})
     
     all_symbols = sorted(all_symbols)
-    # 【修改處】：雷達鎖定成交量前 100 大幣種，兼顧速度與賺錢機會
-    top_100 = sorted(symbol_vol, key=lambda x: x['volume'], reverse=True)[:100] 
+    # 【修改處】：雷達鎖定成交量前 50 大幣種，極致專注於高流動性標的
+    top_50 = sorted(symbol_vol, key=lambda x: x['volume'], reverse=True)[:50] 
     
-    return all_symbols, top_100
+    return all_symbols, top_50
 
 def analyze_single_coin(sym):
     """AI 顧問專用：單幣種深度分析"""
@@ -77,28 +77,27 @@ def analyze_single_coin(sym):
 # ==========================================
 # 介面渲染與掃描區塊
 # ==========================================
-all_symbols, top_100_market = fetch_market_data()
+all_symbols, top_50_market = fetch_market_data()
 
-tab1, tab2 = st.tabs(["📡 前100大極速雷達 (自動推薦)", "🤖 AI 專屬操盤顧問 (自選幣種)"])
+tab1, tab2 = st.tabs(["📡 前50大極速雷達 (自動推薦)", "🤖 AI 專屬操盤顧問 (自選幣種)"])
 
 # ------------------------------------------
-# TAB 1: 前100大極速雷達 (自動推薦進場)
+# TAB 1: 前50大極速雷達 (自動推薦進場)
 # ------------------------------------------
 with tab1:
-    # 網頁刷新頻率調回 60,000 毫秒 (1分鐘)
     count = st_autorefresh(interval=60000, limit=None, key="auto_refresh")
-    st.caption(f"🔄 網頁每 60 秒自動更新 | 當前共監控成交量前 100 大活躍幣種")
-    st.write("精準鎖定市場 95% 流動性，絕不錯過任何 SMC 進場機會。")
+    st.caption(f"🔄 網頁每 60 秒自動更新 | 當前共監控成交量前 50 大活躍幣種")
+    st.write("精準鎖定市場頂尖流動性，絕不錯過任何高勝率 SMC 進場機會。")
     
     signals = []
     exchange = ccxt.bingx({'enableRateLimit': True, 'options': {'defaultType': 'swap'}})
     
-    if len(top_100_market) > 0:
-        progress_text = f"📡 正在極速掃描前 100 大幣種，請稍候..."
+    if len(top_50_market) > 0:
+        progress_text = f"📡 正在極速掃描前 50 大幣種，請稍候..."
         my_bar = st.progress(0, text=progress_text)
         
-        total_coins = len(top_100_market)
-        for i, item in enumerate(top_100_market):
+        total_coins = len(top_50_market)
+        for i, item in enumerate(top_50_market):
             sym = item['symbol']
             my_bar.progress((i + 1) / total_coins, text=f"📡 掃描進度：{i+1} / {total_coins} ({sym})")
             
@@ -164,7 +163,7 @@ with tab1:
                  f"🛑 **停損**：`{sig['停損']:.4f}` | 💰 **停利**：`{sig['停利']:.4f}`\n\n"
                  f"💡 {sig['建議']}")
     else:
-        st.info("⚪ 目前前 100 大幣種皆無合適進場訊號。安全第一，請耐心等待。")
+        st.info("⚪ 目前前 50 大幣種皆無合適進場訊號。安全第一，請耐心等待。")
 
 # ------------------------------------------
 # TAB 2: AI 操盤顧問 (自選幣種互動問答)
