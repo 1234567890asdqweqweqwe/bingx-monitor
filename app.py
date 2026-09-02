@@ -8,12 +8,13 @@ from streamlit_autorefresh import st_autorefresh
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
 st.set_page_config(page_title="AI 5M 極速雷達與專屬操盤顧問", layout="centered")
-st.title("🎯 AI 操盤系統 (山寨幣極速版)")
+st.title("🎯 AI 操盤系統 (山寨幣多執行緒版)")
 
 # ==========================================
 # 共用核心演算法
 # ==========================================
 def get_overall_sr(df_1h, current_price):
+    """計算 1H 大級別整體壓力與支撐"""
     df_1h['swing_high'] = df_1h['high'] == df_1h['high'].rolling(window=11, center=True).max()
     df_1h['swing_low'] = df_1h['low'] == df_1h['low'].rolling(window=11, center=True).min()
     swing_highs = df_1h[df_1h['swing_high']]['high'].dropna().tolist()
@@ -32,27 +33,33 @@ def fetch_market_data():
     all_symbols = []
     symbol_vol = []
     
-    # ⛔ 終極黑名單：徹底封殺傳統金融與老大哥，專注高爆發山寨幣
+    # ⛔ 終極黑名單：傳統金融與老大哥
     blacklist = [
         'GOLD', 'SILVER', 'XAU', 'XAG', 'WTI', 'BRENT', 'OIL', 'DXY', 
-        'NVDA', 'TSLA', 'AAPL', 'MSFT', 'AMZN', 'GOOGL', 'META', 'COIN', 'BABA', 
+        'NVDA', 'TSLA', 'AAPL', 'MSFT', 'AMZN', 'GOOGL', 'META', 'COIN', 'BABA', 'MSTR',
         'SP500', 'NDX', 'DJI', 'NQ', 'US30', 'BTC', 'ETH'
     ]
     
     for sym, data in tickers.items():
         if sym.endswith(':USDT') and data.get('quoteVolume'):
             base = sym.split('/')[0].split('-')[0].split(':')[0]
-            if base not in blacklist:
-                all_symbols.append(sym)
-                symbol_vol.append({'symbol': sym, 'volume': data['quoteVolume'], 'last': data['last'], 'pct': data.get('percentage', 0)})
+            
+            # 🛡️ 智慧名稱濾網：過濾奇怪合成資產與過長代幣名
+            if base in blacklist or 'NCSK' in base or 'MSTR' in base:
+                continue
+            if len(base) > 8 and not base.startswith('100'):
+                continue
+                
+            all_symbols.append(sym)
+            symbol_vol.append({'symbol': sym, 'volume': data['quoteVolume'], 'last': data['last'], 'pct': data.get('percentage', 0)})
     
     all_symbols = sorted(all_symbols)
-    # 動態抓取全市場資金最集中的前 50 大山寨幣
     top_50 = sorted(symbol_vol, key=lambda x: x['volume'], reverse=True)[:50] 
     return all_symbols, top_50
 
 @st.cache_data(ttl=60, show_spinner=False)
 def run_radar_scan_multithread(top_50_market):
+    """多執行緒背景掃描 5M 訊號"""
     signals = []
     
     def process_coin(item):
@@ -75,6 +82,7 @@ def run_radar_scan_multithread(top_50_market):
             
             res_level, sup_level = get_overall_sr(df_1h, c_now_5m)
             
+            # 引擎 A：4H 區間假突破
             today_date = datetime.now(timezone.utc).date()
             first_4h = df_4h[(df_4h['datetime'].dt.date == today_date) & (df_4h['datetime'].dt.hour == 0)]
             range_high = first_4h['high'].values[0] if not first_4h.empty else None
@@ -96,6 +104,7 @@ def run_radar_scan_multithread(top_50_market):
                         if (c_now_5m - tp) > (risk * 1.2):
                             coin_signals.append({'幣': sym, '方向': '🔴 做空', '進場': f"`{c_now_5m:.4f}` ~ `{range_high:.4f}`", '停損': sl, '停利': tp, '建議': f"🛡️ 4H 假突破，下方支撐 {sup_level:.4f}。"})
 
+            # 引擎 B：5M 動能突破
             macd = df_5m.ta.macd(fast=12, slow=26, signal=9)
             macd_line = macd.iloc[-2, 0]
             signal_line = macd.iloc[-2, 2]
@@ -118,6 +127,7 @@ def run_radar_scan_multithread(top_50_market):
         except:
             return []
 
+    # 5 個執行緒並行運算
     with ThreadPoolExecutor(max_workers=5) as executor:
         futures = [executor.submit(process_coin, item) for item in top_50_market]
         for future in as_completed(futures):
@@ -128,6 +138,7 @@ def run_radar_scan_multithread(top_50_market):
     return signals
 
 def analyze_single_coin(sym):
+    """AI 顧問專屬高速通道"""
     exchange = ccxt.bingx({'enableRateLimit': False, 'timeout': 5000, 'options': {'defaultType': 'swap'}})
     try:
         ohlcv_1h = exchange.fetch_ohlcv(sym, '1h', limit=210)
@@ -160,6 +171,7 @@ all_symbols, top_50_market = fetch_market_data()
 
 tab1, tab2 = st.tabs(["📡 前50大極速雷達", "🤖 AI 專屬操盤顧問"])
 
+# UI 權限反轉：先處理 AI 顧問
 with tab2:
     st.subheader("🤖 問問 AI：這張單該不該下？")
     ai_btn_clicked = False
@@ -247,13 +259,14 @@ with tab2:
             else:
                 st.error("無法取得即時數據，請稍後再試。")
 
+# 處理完 AI 後，雷達接續執行
 with tab1:
     count = st_autorefresh(interval=60000, limit=None, key="auto_refresh")
     st.caption(f"🔄 網頁每 60 秒自動更新 | 當前共監控成交量前 50 大強勢山寨幣")
     
     if len(top_50_market) > 0:
         if ai_btn_clicked:
-            st.warning("⏳ 正在為您優先解析 AI 顧問的需求，雷達掃描暫停一回合以確保速度！")
+            st.warning("⏳ 已優先解析 AI 顧問，雷達將暫停一回合以確保順暢體驗！")
         else:
             with st.spinner('📡 雷達正在背景啟動【多執行緒】高速運算中...'):
                 signals = run_radar_scan_multithread(top_50_market)
