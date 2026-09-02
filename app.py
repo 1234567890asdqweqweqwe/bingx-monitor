@@ -9,9 +9,9 @@ from streamlit_autorefresh import st_autorefresh
 # ==========================================
 # 網頁基本設定
 # ==========================================
-st.set_page_config(page_title="AI 預測與動態進場儀表板", layout="centered")
-st.title("🎯 預測走勢 ＋ 動態進場 (純幣圈)")
-st.write("每 60 秒自動掃描，精準預測反轉與突破，提供最佳「進場區間」。")
+st.set_page_config(page_title="AI 5分鐘極速狙擊儀表板", layout="centered")
+st.title("🎯 5分鐘極短線 ＋ 動態進場 (純幣圈)")
+st.write("完全採用 Data Trader 與 SMC 核心策略。每 60 秒掃描全市場 5 分鐘 K 線，精準預測反轉。")
 
 count = st_autorefresh(interval=60000, limit=None, key="auto_refresh")
 
@@ -27,6 +27,7 @@ def scan_market():
     all_coins = []
     symbol_vol = []
     
+    # 嚴格黑名單
     blacklist = ['NVDA', 'TSLA', 'AAPL', 'MSFT', 'AMZN', 'GOOGL', 'META', 'COIN', 'SP500', 'NDX', 'DJI', 'GOLD', 'SILVER', 'NQ', 'BABA']
     
     for sym, data in tickers.items():
@@ -50,27 +51,26 @@ def scan_market():
     for item in top_40:
         sym = item['symbol']
         try:
+            # 獲取 4H 數據 (用於每日區間)
             ohlcv_4h = exchange.fetch_ohlcv(sym, '4h', limit=10)
             df_4h = pd.DataFrame(ohlcv_4h, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
             df_4h['datetime'] = pd.to_datetime(df_4h['timestamp'], unit='ms')
             
-            ohlcv_1h = exchange.fetch_ohlcv(sym, '1h', limit=210)
-            df_1h = pd.DataFrame(ohlcv_1h, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
-            close_1h = df_1h['close'].iloc[-1]
-            ema200_1h = df_1h['close'].ewm(span=200, adjust=False).mean().iloc[-1] if len(df_1h) >= 200 else close_1h
-            htf_trend = "BULLISH" if close_1h > ema200_1h else "BEARISH"
-
-            ohlcv_15m = exchange.fetch_ohlcv(sym, '15m', limit=250)
+            # 獲取 15M 數據 (僅作大趨勢方向防守，不作進場觸發)
+            ohlcv_15m = exchange.fetch_ohlcv(sym, '15m', limit=100)
             df_15m = pd.DataFrame(ohlcv_15m, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
-            current_close_15m = df_15m['close'].iloc[-2]
-            current_now_15m = df_15m['close'].iloc[-1]
-            
-            ohlcv_5m = exchange.fetch_ohlcv(sym, '5m', limit=50)
+            close_15m = df_15m['close'].iloc[-1]
+            ema200_15m = df_15m['close'].ewm(span=200, adjust=False).mean().iloc[-1] if len(df_15m) >= 50 else close_15m
+            htf_trend = "BULLISH" if close_15m > ema200_15m else "BEARISH"
+
+            # 獲取 5M 數據 (★★★ 全部改用 5M 作為核心分析 ★★★)
+            ohlcv_5m = exchange.fetch_ohlcv(sym, '5m', limit=250)
             df_5m = pd.DataFrame(ohlcv_5m, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
             current_close_5m = df_5m['close'].iloc[-2]
+            current_now_5m = df_5m['close'].iloc[-1]
             prev_close_5m = df_5m['close'].iloc[-3]
 
-            # --- 引擎 A：4H 區間假突破 (預測反轉) ---
+            # --- 引擎 A：4H 區間假突破 (5M 觸發) ---
             today_date = datetime.now(timezone.utc).date()
             first_4h = df_4h[(df_4h['datetime'].dt.date == today_date) & (df_4h['datetime'].dt.hour == 0)]
             range_high = first_4h['high'].values[0] if not first_4h.empty else None
@@ -79,113 +79,116 @@ def scan_market():
             if range_high and range_low:
                 if prev_close_5m < range_low and current_close_5m > range_low:
                     sl_price = df_5m['low'].iloc[-5:-1].min()
-                    risk = current_now_15m - sl_price
-                    if risk > 0 and (risk / current_now_15m) <= 0.02:
+                    risk = current_now_5m - sl_price
+                    if risk > 0 and (risk / current_now_5m) <= 0.02:
                         signals.append({
                             '幣種': sym.split(':')[0],
-                            '方向': '🟢 做多 (Long)',
+                            '方向': '🟢 5M 極速做多 (Long)',
                             '預測': '⚡ 4H 誘空結束，準備強勢上漲',
-                            '進場': f"`{range_low:.4f}` ~ `{current_now_15m:.4f}`",
+                            '進場': f"`{range_low:.4f}` ~ `{current_now_5m:.4f}`",
                             '停損': sl_price,
-                            '停利': current_now_15m + (2.5 * risk),
-                            '建議': '建議一半倉位現價市價進場，一半掛單在區間下緣。'
+                            '停利': current_now_5m + (2.5 * risk),
+                            '建議': 'Data Trader 建議：一半倉位現價進，一半掛在區間下緣。'
                         })
                 elif prev_close_5m > range_high and current_close_5m < range_high:
                     sl_price = df_5m['high'].iloc[-5:-1].max()
-                    risk = sl_price - current_now_15m
-                    if risk > 0 and (risk / current_now_15m) <= 0.02:
+                    risk = sl_price - current_now_5m
+                    if risk > 0 and (risk / current_now_5m) <= 0.02:
                         signals.append({
                             '幣種': sym.split(':')[0],
-                            '方向': '🔴 做空 (Short)',
+                            '方向': '🔴 5M 極速做空 (Short)',
                             '預測': '⚡ 4H 誘多結束，準備暴跌回調',
-                            '進場': f"`{current_now_15m:.4f}` ~ `{range_high:.4f}`",
+                            '進場': f"`{current_now_5m:.4f}` ~ `{range_high:.4f}`",
                             '停損': sl_price,
-                            '停利': current_now_15m - (2.5 * risk),
-                            '建議': '建議一半倉位現價市價進場，一半掛單在區間上緣。'
+                            '停利': current_now_5m - (2.5 * risk),
+                            '建議': 'Data Trader 建議：一半倉位現價進，一半掛在區間上緣。'
                         })
 
-            # --- 引擎 B：淺回撤動能預測 (0.382~0.618) ---
-            macd = df_15m.ta.macd(fast=12, slow=26, signal=9)
+            # --- 引擎 B：淺回撤動能預測 (改為 5M 分析) ---
+            macd = df_5m.ta.macd(fast=12, slow=26, signal=9)
             macd_line = macd.iloc[-2, 0]
             signal_line = macd.iloc[-2, 2]
-            recent_high = df_15m['high'].iloc[-15:-2].max()
-            recent_low = df_15m['low'].iloc[-15:-2].min()
-            bos_bull = current_close_15m > recent_high
-            bos_bear = current_close_15m < recent_low
+            
+            # 抓取 5M 前高前低
+            recent_high = df_5m['high'].iloc[-15:-2].max()
+            recent_low = df_5m['low'].iloc[-15:-2].min()
+            bos_bull = current_close_5m > recent_high
+            bos_bear = current_close_5m < recent_low
             
             if macd_line > signal_line and bos_bull:
-                swing_high = df_15m['high'].iloc[-3:].max()
+                swing_high = df_5m['high'].iloc[-3:].max()
                 e_0382 = swing_high - 0.382 * (swing_high - recent_low)
                 e_0618 = swing_high - 0.618 * (swing_high - recent_low)
                 sl_price = recent_low * 0.998
                 signals.append({
                     '幣種': sym.split(':')[0],
-                    '方向': '🟢 做多 (Long)',
-                    '預測': '🌟 動能突破，回踩後將再創高',
+                    '方向': '🟢 5M 極速做多 (Long)',
+                    '預測': '🌟 5分鐘動能突破 (SMC BOS)，首波回踩後將創高',
                     '進場': f"`{e_0618:.4f}` ~ `{e_0382:.4f}`",
                     '停損': sl_price,
                     '停利': e_0382 + (2.5 * (e_0382 - sl_price)),
-                    '建議': '若現價已在區間內，可直接買入 50%，不怕錯失行情。'
+                    '建議': '現價若在區間內，直接市價 50% 不怕錯過。'
                 })
             elif macd_line < signal_line and bos_bear:
-                swing_low = df_15m['low'].iloc[-3:].min()
+                swing_low = df_5m['low'].iloc[-3:].min()
                 e_0382 = swing_low + 0.382 * (recent_high - swing_low)
                 e_0618 = swing_low + 0.618 * (recent_high - swing_low)
                 sl_price = recent_high * 1.002
                 signals.append({
                     '幣種': sym.split(':')[0],
-                    '方向': '🔴 做空 (Short)',
-                    '預測': '🌟 支撐跌破，反彈後將繼續破底',
+                    '方向': '🔴 5M 極速做空 (Short)',
+                    '預測': '🌟 5分鐘支撐跌破 (SMC BOS)，首波反彈後將破底',
                     '進場': f"`{e_0382:.4f}` ~ `{e_0618:.4f}`",
                     '停損': sl_price,
                     '停利': e_0382 - (2.5 * (sl_price - e_0382)),
-                    '建議': '若現價已在區間內，可直接做空 50%，保證上車。'
+                    '建議': '現價若在區間內，直接市價 50% 保證上車。'
                 })
 
-            # --- 引擎 C：7 星全指標大共振 ---
-            df_15m.ta.adx(length=14, append=True)
-            df_15m.ta.psar(append=True)
-            bbands = df_15m.ta.bbands(length=20, std=2)
-            df_15m.ta.atr(length=14, append=True)
+            # --- 引擎 C：7 星全指標大共振 (改為 5M 計算) ---
+            df_5m.ta.adx(length=14, append=True)
+            df_5m.ta.psar(append=True)
+            bbands = df_5m.ta.bbands(length=20, std=2)
+            df_5m.ta.atr(length=14, append=True)
             
-            adx = df_15m['ADX_14'].iloc[-2] if 'ADX_14' in df_15m.columns else 0
-            dips = df_15m['DMP_14'].iloc[-2] if 'DMP_14' in df_15m.columns else 0
-            dins = df_15m['DMN_14'].iloc[-2] if 'DMN_14' in df_15m.columns else 0
-            psar_col = [c for c in df_15m.columns if c.startswith('PSARl')]
-            psars_col = [c for c in df_15m.columns if c.startswith('PSARs')]
-            psar_bull = pd.notna(df_15m[psar_col[0]].iloc[-2]) if psar_col else False
-            psar_bear = pd.notna(df_15m[psars_col[0]].iloc[-2]) if psars_col else False
+            adx = df_5m['ADX_14'].iloc[-2] if 'ADX_14' in df_5m.columns else 0
+            dips = df_5m['DMP_14'].iloc[-2] if 'DMP_14' in df_5m.columns else 0
+            dins = df_5m['DMN_14'].iloc[-2] if 'DMN_14' in df_5m.columns else 0
+            psar_col = [c for c in df_5m.columns if c.startswith('PSARl')]
+            psars_col = [c for c in df_5m.columns if c.startswith('PSARs')]
+            psar_bull = pd.notna(df_5m[psar_col[0]].iloc[-2]) if psar_col else False
+            psar_bear = pd.notna(df_5m[psars_col[0]].iloc[-2]) if psars_col else False
             upper_band = bbands.iloc[-2, 2]
             lower_band = bbands.iloc[-2, 0]
-            atr = df_15m['ATRr_14'].iloc[-2]
+            atr = df_5m['ATRr_14'].iloc[-2]
             
-            fvg_bull = (df_15m['high'].iloc[-5] < df_15m['low'].iloc[-3]) and (df_15m['close'].iloc[-4] > df_15m['open'].iloc[-4])
-            fvg_bear = (df_15m['low'].iloc[-5] > df_15m['high'].iloc[-3]) and (df_15m['close'].iloc[-4] < df_15m['open'].iloc[-4])
-            dow_bull = (df_15m['high'].iloc[-2] > df_15m['high'].iloc[-10:-3].max()) and (df_15m['low'].iloc[-2] > df_15m['low'].iloc[-10:-3].min())
-            dow_bear = (df_15m['low'].iloc[-2] < df_15m['low'].iloc[-10:-3].min()) and (df_15m['high'].iloc[-2] < df_15m['high'].iloc[-10:-3].max())
+            # SMC FVG 缺口 (5M)
+            fvg_bull = (df_5m['high'].iloc[-5] < df_5m['low'].iloc[-3]) and (df_5m['close'].iloc[-4] > df_5m['open'].iloc[-4])
+            fvg_bear = (df_5m['low'].iloc[-5] > df_5m['high'].iloc[-3]) and (df_5m['close'].iloc[-4] < df_5m['open'].iloc[-4])
+            dow_bull = (df_5m['high'].iloc[-2] > df_5m['high'].iloc[-10:-3].max()) and (df_5m['low'].iloc[-2] > df_5m['low'].iloc[-10:-3].min())
+            dow_bear = (df_5m['low'].iloc[-2] < df_5m['low'].iloc[-10:-3].min()) and (df_5m['high'].iloc[-2] < df_5m['high'].iloc[-10:-3].max())
 
-            bull_factors = sum([htf_trend=="BULLISH", dow_bull, macd_line>signal_line and macd_line>0, adx>20 and dips>dins, psar_bull, current_close_15m>=upper_band, fvg_bull])
-            bear_factors = sum([htf_trend=="BEARISH", dow_bear, macd_line<signal_line and macd_line<0, adx>20 and dins>dips, psar_bear, current_close_15m<=lower_band, fvg_bear])
+            bull_factors = sum([htf_trend=="BULLISH", dow_bull, macd_line>signal_line and macd_line>0, adx>20 and dips>dins, psar_bull, current_close_5m>=upper_band, fvg_bull])
+            bear_factors = sum([htf_trend=="BEARISH", dow_bear, macd_line<signal_line and macd_line<0, adx>20 and dins>dips, psar_bear, current_close_5m<=lower_band, fvg_bear])
 
             if bull_factors >= 6:
                 signals.append({
                     '幣種': sym.split(':')[0],
-                    '方向': '🟢 強勢做多 (Long)',
-                    '預測': f'🏆 強烈多方共振 ({bull_factors}/7)，極高機率單邊暴漲',
-                    '進場': f"`{current_now_15m:.4f}` (市價直接進場)",
-                    '停損': current_now_15m - (atr * 1.5),
-                    '停利': current_now_15m + (atr * 2.5),
-                    '建議': '動能過強不建議等回調，直接市價買入！'
+                    '方向': '🟢 5M 強勢做多 (Long)',
+                    '預測': f'🏆 5分鐘極短線強烈共振 ({bull_factors}/7)，極高機率單邊暴漲',
+                    '進場': f"`{current_now_5m:.4f}` (市價直接買入)",
+                    '停損': current_now_5m - (atr * 1.5),
+                    '停利': current_now_5m + (atr * 2.5),
+                    '建議': '動能過強，絕對不要等回調，直接上車！'
                 })
             elif bear_factors >= 6:
                 signals.append({
                     '幣種': sym.split(':')[0],
-                    '方向': '🔴 強勢做空 (Short)',
-                    '預測': f'🏆 強烈空方共振 ({bear_factors}/7)，極高機率單邊暴跌',
-                    '進場': f"`{current_now_15m:.4f}` (市價直接進場)",
-                    '停損': current_now_15m + (atr * 1.5),
-                    '停利': current_now_15m - (atr * 2.5),
-                    '建議': '動能過強不建議等反彈，直接市價做空！'
+                    '方向': '🔴 5M 強勢做空 (Short)',
+                    '預測': f'🏆 5分鐘極短線強烈共振 ({bear_factors}/7)，極高機率單邊暴跌',
+                    '進場': f"`{current_now_5m:.4f}` (市價直接做空)",
+                    '停損': current_now_5m + (atr * 1.5),
+                    '停利': current_now_5m - (atr * 2.5),
+                    '建議': '動能過強，絕對不要等反彈，直接上車！'
                 })
 
         except Exception:
@@ -201,13 +204,13 @@ def scan_market():
 st.caption(f"🔄 最後掃描時間：{time.strftime('%Y-%m-%d %H:%M:%S')} (每分鐘自動更新)")
 st.divider()
 
-with st.spinner('📡 正在執行全市場走勢預測掃描中...'):
+with st.spinner('📡 正在執行 5 分鐘全市場走勢預測掃描中...'):
     df_market, active_signals = scan_market()
 
 if df_market.empty:
     st.error("連線異常，請稍後再試。")
 else:
-    st.subheader(f"💡 AI 預測進場清單")
+    st.subheader(f"💡 5 分鐘極速進場清單")
     
     if len(active_signals) > 0:
         for sig in active_signals:
@@ -219,7 +222,7 @@ else:
                        f"💰 **停利價**：`{sig['停利']:.4f}`\n\n"
                        f"💡 **AI 建議**：{sig['建議']}")
     else:
-        st.info("⚪ 目前市場沒有極端反轉或突破訊號。請耐心等待最佳的「進場區間」出現！")
+        st.info("⚪ 目前 5 分鐘線沒有極端反轉或突破訊號。Data Trader 說過：等待才是最賺錢的部位，請耐心等獵物掉進陷阱！")
         
     st.divider()
     
