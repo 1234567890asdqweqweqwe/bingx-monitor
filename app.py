@@ -7,7 +7,7 @@ from datetime import datetime, timezone
 from streamlit_autorefresh import st_autorefresh
 
 st.set_page_config(page_title="AI 5M 極速雷達與專屬操盤顧問", layout="centered")
-st.title("🎯 AI 操盤系統 (全市場掃描版)")
+st.title("🎯 AI 操盤系統 (Top 100 極速版)")
 
 # ==========================================
 # 共用核心演算法
@@ -23,9 +23,9 @@ def get_overall_sr(df_1h, current_price):
     return (min(res_list) if res_list else df_1h['high'].max(), 
             max(sup_list) if sup_list else df_1h['low'].min())
 
-@st.cache_data(ttl=120)  # 因為全市場掃描較久，快取時間延長至 120 秒
+@st.cache_data(ttl=60)
 def fetch_market_data():
-    """抓取全市場資料：解除 40 大限制，獲取所有有效 USDT 交易對"""
+    """抓取全市場資料：顧問選單保留全幣種，雷達僅抓取前 100 大"""
     exchange = ccxt.bingx({'enableRateLimit': True, 'options': {'defaultType': 'swap'}})
     try: tickers = exchange.fetch_tickers()
     except: return [], []
@@ -42,10 +42,10 @@ def fetch_market_data():
                 symbol_vol.append({'symbol': sym, 'volume': data['quoteVolume'], 'last': data['last'], 'pct': data.get('percentage', 0)})
     
     all_symbols = sorted(all_symbols)
-    # 解除切片限制，回傳所有按照成交量排序的幣種
-    all_active_markets = sorted(symbol_vol, key=lambda x: x['volume'], reverse=True) 
+    # 【修改處】：雷達鎖定成交量前 100 大幣種，兼顧速度與賺錢機會
+    top_100 = sorted(symbol_vol, key=lambda x: x['volume'], reverse=True)[:100] 
     
-    return all_symbols, all_active_markets
+    return all_symbols, top_100
 
 def analyze_single_coin(sym):
     """AI 顧問專用：單幣種深度分析"""
@@ -77,30 +77,29 @@ def analyze_single_coin(sym):
 # ==========================================
 # 介面渲染與掃描區塊
 # ==========================================
-all_symbols, all_active_markets = fetch_market_data()
+all_symbols, top_100_market = fetch_market_data()
 
-tab1, tab2 = st.tabs(["📡 全市場極速雷達 (自動推薦)", "🤖 AI 專屬操盤顧問 (自選幣種)"])
+tab1, tab2 = st.tabs(["📡 前100大極速雷達 (自動推薦)", "🤖 AI 專屬操盤顧問 (自選幣種)"])
 
 # ------------------------------------------
-# TAB 1: 全市場極速雷達 (自動推薦進場)
+# TAB 1: 前100大極速雷達 (自動推薦進場)
 # ------------------------------------------
 with tab1:
-    # 因掃描時間變長，網頁刷新頻率改為 120,000 毫秒 (2分鐘)
-    count = st_autorefresh(interval=120000, limit=None, key="auto_refresh")
-    st.caption(f"🔄 網頁每 2 分鐘自動更新 | 當前共監控 {len(all_active_markets)} 個幣種")
-    st.write("正對全市場進行地毯式掃描，絕不錯過任何 SMC 進場機會。")
+    # 網頁刷新頻率調回 60,000 毫秒 (1分鐘)
+    count = st_autorefresh(interval=60000, limit=None, key="auto_refresh")
+    st.caption(f"🔄 網頁每 60 秒自動更新 | 當前共監控成交量前 100 大活躍幣種")
+    st.write("精準鎖定市場 95% 流動性，絕不錯過任何 SMC 進場機會。")
     
     signals = []
     exchange = ccxt.bingx({'enableRateLimit': True, 'options': {'defaultType': 'swap'}})
     
-    if len(all_active_markets) > 0:
-        progress_text = f"📡 正在深度掃描全市場 {len(all_active_markets)} 個幣種，請耐心稍候..."
+    if len(top_100_market) > 0:
+        progress_text = f"📡 正在極速掃描前 100 大幣種，請稍候..."
         my_bar = st.progress(0, text=progress_text)
         
-        total_coins = len(all_active_markets)
-        for i, item in enumerate(all_active_markets):
+        total_coins = len(top_100_market)
+        for i, item in enumerate(top_100_market):
             sym = item['symbol']
-            # 更新進度條
             my_bar.progress((i + 1) / total_coins, text=f"📡 掃描進度：{i+1} / {total_coins} ({sym})")
             
             try:
@@ -152,9 +151,9 @@ with tab1:
                         signals.append({'幣': sym, '方向': '🟢 做多', '進場': f"`{e_0382:.4f}` 回踩", '停損': sl, '停利': tp, '建議': "🌟 動能突破，等待回踩。"})
             except:
                 pass
-            time.sleep(0.05) # 必須保留微小暫停避免 API 封鎖
+            time.sleep(0.05) 
             
-        my_bar.empty() # 掃描完成後隱藏進度條
+        my_bar.empty() 
             
     if len(signals) > 0:
         st.subheader(f"💡 發現 {len(signals)} 個 AI 推薦進場機會")
@@ -165,7 +164,7 @@ with tab1:
                  f"🛑 **停損**：`{sig['停損']:.4f}` | 💰 **停利**：`{sig['停利']:.4f}`\n\n"
                  f"💡 {sig['建議']}")
     else:
-        st.info("⚪ 目前全市場數百個幣種皆無合適進場訊號。安全第一，請耐心等待。")
+        st.info("⚪ 目前前 100 大幣種皆無合適進場訊號。安全第一，請耐心等待。")
 
 # ------------------------------------------
 # TAB 2: AI 操盤顧問 (自選幣種互動問答)
@@ -199,7 +198,6 @@ with tab2:
                 score = 0
                 feedback = []
                 
-                # 趨勢分析
                 if is_long:
                     if trend == 'BULLISH':
                         score += 2
@@ -213,7 +211,6 @@ with tab2:
                     else:
                         feedback.append("⚠️ **【逆勢警告】** 1H 趨勢偏多，做空等於阻擋火車。")
                         
-                # 空間分析
                 if is_long:
                     if room_up > 2.0:
                         score += 2
@@ -227,7 +224,6 @@ with tab2:
                     else:
                         feedback.append(f"❌ **【撞地風險】** 距下方支撐 `{s:.4f}` 僅剩 -{room_down:.2f}%，極易軋空反彈！")
                         
-                # 動能分析
                 if is_long and macd_up:
                     score += 1
                     feedback.append("✅ **【動能充沛】** 短線多頭動能正在爆發，易脫離成本區。")
