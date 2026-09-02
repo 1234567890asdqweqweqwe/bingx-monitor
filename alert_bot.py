@@ -13,8 +13,13 @@ def send_telegram_message(message):
     url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
     requests.post(url, json={"chat_id": CHAT_ID, "text": message, "parse_mode": "Markdown"})
 
+def fmt_p(p):
+    if pd.isna(p) or p is None: return "0"
+    if p < 0.0001: return f"{p:.8f}"
+    elif p < 1: return f"{p:.6f}"
+    else: return f"{p:.4f}"
+
 def get_overall_sr(df_1h, current_price):
-    """計算 1H 大級別整體壓力與支撐"""
     df_1h['swing_high'] = df_1h['high'] == df_1h['high'].rolling(window=11, center=True).max()
     df_1h['swing_low'] = df_1h['low'] == df_1h['low'].rolling(window=11, center=True).min()
     swing_highs = df_1h[df_1h['swing_high']]['high'].dropna().tolist()
@@ -27,23 +32,23 @@ def get_overall_sr(df_1h, current_price):
 def main():
     exchange = ccxt.bingx({'enableRateLimit': True, 'options': {'defaultType': 'swap'}})
     now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-    print(f"[{now}] 啟動【山寨幣 S 級狙擊版：三重時間框架 + ADX 動能 + 1.5R 空間】...")
+    print(f"[{now}] 啟動【山寨幣 S 級狙擊版：千萬流動性 + 防插針濾網】...")
     
     try:
         tickers = exchange.fetch_tickers()
-        symbol_vol = [{'symbol': sym, 'volume': data['quoteVolume']} 
-                      for sym, data in tickers.items() if sym.endswith(':USDT') and data.get('quoteVolume')]
+        symbol_vol = [{'symbol': sym, 'volume': data.get('quoteVolume', 0)} 
+                      for sym, data in tickers.items() if sym.endswith(':USDT')]
     except Exception as e:
         return
 
-    # ⛔ 終極黑名單：徹底封殺大盤、傳產與主流幣
+    # ⛔ 終極黑名單：徹底封殺大盤、傳產、主流幣，與「黃金代幣/穩定幣」
     blacklist = [
         'GOLD', 'SILVER', 'XAU', 'XAG', 'WTI', 'BRENT', 'OIL', 'DXY', 
         'NVDA', 'TSLA', 'AAPL', 'MSFT', 'AMZN', 'GOOGL', 'META', 'COIN', 'BABA', 'MSTR',
-        'SP500', 'NDX', 'DJI', 'NQ', 'US30', 'BTC', 'ETH'
+        'SP500', 'NDX', 'DJI', 'NQ', 'US30', 'BTC', 'ETH',
+        'XAUT', 'PAXG', 'USDC', 'FDUSD', 'TUSD', 'USDD', 'EURT', 'BUSD'
     ]
 
-    # 🛡️ 智慧名稱濾網：精準鎖定純正的山寨幣
     filtered_vol = []
     for item in symbol_vol:
         base = item['symbol'].split('/')[0].split('-')[0].split(':')[0]
@@ -52,10 +57,12 @@ def main():
             continue
         if len(base) > 8 and not base.startswith('100'):
             continue
+        # 🌊 策略改良：硬性流動性過濾，24H 成交量必須 > 1,000 萬 USDT
+        if item['volume'] < 10000000:
+            continue
             
         filtered_vol.append(item)
 
-    # 鎖定資金最強的前 50 大純正山寨幣
     top_50 = sorted(filtered_vol, key=lambda x: x['volume'], reverse=True)[:50]
 
     for item in top_50:
@@ -92,32 +99,32 @@ def main():
                 if prev_close_15m < range_low and current_close_15m > range_low and trend_4h == "BULLISH" and trend_1h == "BULLISH":
                     sl_price = df_15m['low'].iloc[-5:-1].min()
                     risk = current_now_15m - sl_price
-                    if risk > 0 and (risk / current_now_15m) <= 0.03:
+                    # 🛡️ 策略改良：最低 0.6% 停損防護網
+                    if risk > 0 and 0.006 <= (risk / current_now_15m) <= 0.03:
                         tp_price = min(current_now_15m + (2.5 * risk), resistance_level * 0.998)
                         if (tp_price - current_now_15m) >= (risk * 1.5):
-                            msg = (f"🔥 **【山寨幣 S 級訊號：大順風假跌破】** 🔥\n"
+                            msg = (f"🔥 **【山寨幣 S 級：大順風假跌破】** 🔥\n"
                                    f"🪙 `{sym}` | 🟢 **強勢做多**\n"
-                                   f"*(4H/1H 大趨勢保護中，主力洗盤結束)*\n\n"
-                                   f"🎯 **推薦進場**：`{range_low:.4f}` ~ `{current_now_15m:.4f}`\n"
-                                   f"🛑 **防守停損**：`{sl_price:.4f}`\n"
-                                   f"💰 **安全停利**：`{tp_price:.4f}`\n\n"
-                                   f"*(🛡️ 空間極佳！距離 1H 壓力位 `{resistance_level:.4f}` 還有很大距離)*")
+                                   f"🎯 **推薦進場**：`{fmt_p(range_low)}` ~ `{fmt_p(current_now_15m)}`\n"
+                                   f"🛑 **防守停損**：`{fmt_p(sl_price)}`\n"
+                                   f"💰 **安全停利**：`{fmt_p(tp_price)}`\n\n"
+                                   f"*(🛡️ 防插針系統已確認：流動性與停損距離安全)*")
                             send_telegram_message(msg)
                             time.sleep(1)
                         
                 elif prev_close_15m > range_high and current_close_15m < range_high and trend_4h == "BEARISH" and trend_1h == "BEARISH":
                     sl_price = df_15m['high'].iloc[-5:-1].max()
                     risk = sl_price - current_now_15m
-                    if risk > 0 and (risk / current_now_15m) <= 0.03:
+                    # 🛡️ 策略改良：最低 0.6% 停損防護網
+                    if risk > 0 and 0.006 <= (risk / current_now_15m) <= 0.03:
                         tp_price = max(current_now_15m - (2.5 * risk), support_level * 1.002)
                         if (current_now_15m - tp_price) >= (risk * 1.5):
-                            msg = (f"🔥 **【山寨幣 S 級訊號：大順風假突破】** 🔥\n"
+                            msg = (f"🔥 **【山寨幣 S 級：大順風假突破】** 🔥\n"
                                    f"🪙 `{sym}` | 🔴 **強勢做空**\n"
-                                   f"*(4H/1H 大趨勢保護中，散戶追高被套)*\n\n"
-                                   f"🎯 **推薦進場**：`{current_now_15m:.4f}` ~ `{range_high:.4f}`\n"
-                                   f"🛑 **防守停損**：`{sl_price:.4f}`\n"
-                                   f"💰 **安全停利**：`{tp_price:.4f}`\n\n"
-                                   f"*(🛡️ 空間極佳！距離 1H 支撐位 `{support_level:.4f}` 還有很大距離)*")
+                                   f"🎯 **推薦進場**：`{fmt_p(current_now_15m)}` ~ `{fmt_p(range_high)}`\n"
+                                   f"🛑 **防守停損**：`{fmt_p(sl_price)}`\n"
+                                   f"💰 **安全停利**：`{fmt_p(tp_price)}`\n\n"
+                                   f"*(🛡️ 防插針系統已確認：流動性與停損距離安全)*")
                             send_telegram_message(msg)
                             time.sleep(1)
 
@@ -133,16 +140,17 @@ def main():
                 e_0618 = swing_high - 0.618 * (swing_high - df_15m['low'].iloc[-15:-2].min())
                 sl_price = df_15m['low'].iloc[-15:-2].min() * 0.998
                 risk = e_0382 - sl_price
-                tp_price = min(e_0382 + (2.5 * risk), resistance_level * 0.998)
-                
-                if (tp_price - e_0382) >= (risk * 1.5):
-                    msg = (f"💎 **【山寨幣 S 級訊號：順風波段起漲】** 💎\n"
-                           f"🪙 `{sym}` | 🟢 **強勢做多**\n\n"
-                           f"🎯 **進場區間**：`{e_0618:.4f}` ~ `{e_0382:.4f}`\n"
-                           f"🛑 **防守停損**：`{sl_price:.4f}` | 💰 **安全停利**：`{tp_price:.4f}`\n"
-                           f"*(三重趨勢一致且動能強勁，為高勝率單！)*")
-                    send_telegram_message(msg)
-                    time.sleep(1)
+                # 🛡️ 策略改良：最低 0.6% 停損防護網
+                if risk > 0 and 0.006 <= (risk / e_0382) <= 0.03:
+                    tp_price = min(e_0382 + (2.5 * risk), resistance_level * 0.998)
+                    if (tp_price - e_0382) >= (risk * 1.5):
+                        msg = (f"💎 **【山寨幣 S 級：順風波段起漲】** 💎\n"
+                               f"🪙 `{sym}` | 🟢 **強勢做多**\n"
+                               f"🎯 **進場區間**：`{fmt_p(e_0618)}` ~ `{fmt_p(e_0382)}`\n"
+                               f"🛑 **防守停損**：`{fmt_p(sl_price)}` | 💰 **安全停利**：`{fmt_p(tp_price)}`\n"
+                               f"*(🛡️ 防插針系統已確認：流動性與停損距離安全)*")
+                        send_telegram_message(msg)
+                        time.sleep(1)
                     
             elif macd_line < signal_line and bos_bear and trend_4h == "BEARISH" and trend_1h == "BEARISH" and adx_val > 20:
                 swing_low = df_15m['low'].iloc[-3:].min()
@@ -150,16 +158,17 @@ def main():
                 e_0618 = swing_low + 0.618 * (df_15m['high'].iloc[-15:-2].max() - swing_low)
                 sl_price = df_15m['high'].iloc[-15:-2].max() * 1.002
                 risk = sl_price - e_0382
-                tp_price = max(e_0382 - (2.5 * risk), support_level * 1.002)
-                
-                if (e_0382 - tp_price) >= (risk * 1.5):
-                    msg = (f"💎 **【山寨幣 S 級訊號：順風波段起跌】** 💎\n"
-                           f"🪙 `{sym}` | 🔴 **強勢做空**\n\n"
-                           f"🎯 **進場區間**：`{e_0382:.4f}` ~ `{e_0618:.4f}`\n"
-                           f"🛑 **防守停損**：`{sl_price:.4f}` | 💰 **安全停利**：`{tp_price:.4f}`\n"
-                           f"*(三重趨勢一致且動能強勁，為高勝率單！)*")
-                    send_telegram_message(msg)
-                    time.sleep(1)
+                # 🛡️ 策略改良：最低 0.6% 停損防護網
+                if risk > 0 and 0.006 <= (risk / e_0382) <= 0.03:
+                    tp_price = max(e_0382 - (2.5 * risk), support_level * 1.002)
+                    if (e_0382 - tp_price) >= (risk * 1.5):
+                        msg = (f"💎 **【山寨幣 S 級：順風波段起跌】** 💎\n"
+                               f"🪙 `{sym}` | 🔴 **強勢做空**\n"
+                               f"🎯 **進場區間**：`{fmt_p(e_0382)}` ~ `{fmt_p(e_0618)}`\n"
+                               f"🛑 **防守停損**：`{fmt_p(sl_price)}` | 💰 **安全停利**：`{fmt_p(tp_price)}`\n"
+                               f"*(🛡️ 防插針系統已確認：流動性與停損距離安全)*")
+                        send_telegram_message(msg)
+                        time.sleep(1)
 
         except Exception as e:
             pass
