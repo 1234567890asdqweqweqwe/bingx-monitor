@@ -11,10 +11,16 @@ st.set_page_config(page_title="AI 5M 極速雷達與專屬操盤顧問", layout=
 st.title("🎯 AI 操盤系統 (終極完全體)")
 
 # ==========================================
-# 共用核心演算法
+# 共用核心演算法 & 智慧小數點
 # ==========================================
+def fmt_p(p):
+    """智慧價格格式化：解決山寨幣小數點過多變成 0.0000 的問題"""
+    if pd.isna(p) or p is None: return "0"
+    if p < 0.0001: return f"{p:.8f}"
+    elif p < 1: return f"{p:.6f}"
+    else: return f"{p:.4f}"
+
 def get_overall_sr(df_1h, current_price):
-    """計算 1H 大級別整體壓力與支撐"""
     df_1h['swing_high'] = df_1h['high'] == df_1h['high'].rolling(window=11, center=True).max()
     df_1h['swing_low'] = df_1h['low'] == df_1h['low'].rolling(window=11, center=True).min()
     swing_highs = df_1h[df_1h['swing_high']]['high'].dropna().tolist()
@@ -26,7 +32,6 @@ def get_overall_sr(df_1h, current_price):
 
 @st.cache_data(ttl=60, show_spinner=False)
 def fetch_market_data():
-    """抓取市場數據，並啟用智慧黑名單濾除傳統金融、大盤與特殊合約"""
     exchange = ccxt.bingx({'enableRateLimit': True, 'options': {'defaultType': 'swap'}})
     try: tickers = exchange.fetch_tickers()
     except: return [], []
@@ -34,7 +39,6 @@ def fetch_market_data():
     all_symbols = []
     symbol_vol = []
     
-    # ⛔ 終極黑名單：傳統金融、美股指數、老大哥主流幣
     blacklist = [
         'GOLD', 'SILVER', 'XAU', 'XAG', 'WTI', 'BRENT', 'OIL', 'DXY', 
         'NVDA', 'TSLA', 'AAPL', 'MSFT', 'AMZN', 'GOOGL', 'META', 'COIN', 'BABA', 'MSTR',
@@ -44,8 +48,6 @@ def fetch_market_data():
     for sym, data in tickers.items():
         if sym.endswith(':USDT') and data.get('quoteVolume'):
             base = sym.split('/')[0].split('-')[0].split(':')[0]
-            
-            # 🛡️ 智慧名稱濾網：過濾奇怪合成資產與過長代幣名
             if base in blacklist or 'NCSK' in base or 'MSTR' in base:
                 continue
             if len(base) > 8 and not base.startswith('100'):
@@ -55,13 +57,11 @@ def fetch_market_data():
             symbol_vol.append({'symbol': sym, 'volume': data['quoteVolume'], 'last': data['last'], 'pct': data.get('percentage', 0)})
     
     all_symbols = sorted(all_symbols)
-    # 動態抓取全市場資金最集中的前 50 大高爆發山寨幣
     top_50 = sorted(symbol_vol, key=lambda x: x['volume'], reverse=True)[:50] 
     return all_symbols, top_50
 
 @st.cache_data(ttl=60, show_spinner=False)
 def run_radar_scan_multithread(top_50_market):
-    """多執行緒背景掃描 5M 訊號，嚴格執行防撞牆邏輯"""
     signals = []
     
     def process_coin(item):
@@ -84,35 +84,27 @@ def run_radar_scan_multithread(top_50_market):
             
             res_level, sup_level = get_overall_sr(df_1h, c_now_5m)
             
-            # ==============================
-            # 引擎 A：4H 區間假突破 (誘多/誘空)
-            # ==============================
             today_date = datetime.now(timezone.utc).date()
             first_4h = df_4h[(df_4h['datetime'].dt.date == today_date) & (df_4h['datetime'].dt.hour == 0)]
             range_high = first_4h['high'].values[0] if not first_4h.empty else None
             range_low = first_4h['low'].values[0] if not first_4h.empty else None
             
             if range_high and range_low:
-                # 假跌破做多
                 if c_prev2_5m < range_low and c_prev_5m > range_low:
                     sl = df_5m['low'].iloc[-5:-1].min()
                     risk = c_now_5m - sl
                     if risk > 0 and (risk / c_now_5m) <= 0.02:
                         tp = min(c_now_5m + (2.5 * risk), res_level * 0.998)
                         if (tp - c_now_5m) > (risk * 1.2):
-                            coin_signals.append({'幣': sym, '方向': '🟢 做多', '進場': f"`{range_low:.4f}` ~ `{c_now_5m:.4f}`", '停損': sl, '停利': tp, '建議': f"🛡️ 4H 假跌破，上方 1H 壓力 {res_level:.4f}。"})
-                # 假突破做空
+                            coin_signals.append({'幣': sym, '方向': '🟢 做多', '進場': f"`{fmt_p(range_low)}` ~ `{fmt_p(c_now_5m)}`", '停損': fmt_p(sl), '停利': fmt_p(tp), '建議': f"🛡️ 4H 假跌破，上方壓力 {fmt_p(res_level)}。"})
                 elif c_prev2_5m > range_high and c_prev_5m < range_high:
                     sl = df_5m['high'].iloc[-5:-1].max()
                     risk = sl - c_now_5m
                     if risk > 0 and (risk / c_now_5m) <= 0.02:
                         tp = max(c_now_5m - (2.5 * risk), sup_level * 1.002)
                         if (c_now_5m - tp) > (risk * 1.2):
-                            coin_signals.append({'幣': sym, '方向': '🔴 做空', '進場': f"`{c_now_5m:.4f}` ~ `{range_high:.4f}`", '停損': sl, '停利': tp, '建議': f"🛡️ 4H 假突破，下方 1H 支撐 {sup_level:.4f}。"})
+                            coin_signals.append({'幣': sym, '方向': '🔴 做空', '進場': f"`{fmt_p(c_now_5m)}` ~ `{fmt_p(range_high)}`", '停損': fmt_p(sl), '停利': fmt_p(tp), '建議': f"🛡️ 4H 假突破，下方支撐 {fmt_p(sup_level)}。"})
 
-            # ==============================
-            # 引擎 B：5M 動能突破與回踩
-            # ==============================
             macd = df_5m.ta.macd(fast=12, slow=26, signal=9)
             if macd.iloc[-2, 0] > macd.iloc[-2, 2] and c_prev_5m > df_5m['high'].iloc[-15:-2].max():
                 swing_high = df_5m['high'].iloc[-3:].max()
@@ -120,19 +112,18 @@ def run_radar_scan_multithread(top_50_market):
                 sl = df_5m['low'].iloc[-15:-2].min() * 0.998
                 tp = min(e_0382 + (2.5 * (e_0382 - sl)), res_level * 0.998)
                 if (tp - e_0382) > ((e_0382 - sl) * 1.2):
-                    coin_signals.append({'幣': sym, '方向': '🟢 做多', '進場': f"`{e_0382:.4f}` 回踩", '停損': sl, '停利': tp, '建議': "🌟 5M 動能突破，等待回踩。"})
+                    coin_signals.append({'幣': sym, '方向': '🟢 做多', '進場': f"`{fmt_p(e_0382)}` 回踩", '停損': fmt_p(sl), '停利': fmt_p(tp), '建議': "🌟 5M 動能突破，等待回踩。"})
             elif macd.iloc[-2, 0] < macd.iloc[-2, 2] and c_prev_5m < df_5m['low'].iloc[-15:-2].min():
                 swing_low = df_5m['low'].iloc[-3:].min()
                 e_0382 = swing_low + 0.382 * (df_5m['high'].iloc[-15:-2].max() - swing_low)
                 sl = df_5m['high'].iloc[-15:-2].max() * 1.002
                 tp = max(e_0382 - (2.5 * (sl - e_0382)), sup_level * 1.002)
                 if (e_0382 - tp) > ((sl - e_0382) * 1.2):
-                    coin_signals.append({'幣': sym, '方向': '🔴 做空', '進場': f"`{e_0382:.4f}` 反彈", '停損': sl, '停利': tp, '建議': "🌟 5M 動能破底，等待反彈。"})
+                    coin_signals.append({'幣': sym, '方向': '🔴 做空', '進場': f"`{fmt_p(e_0382)}` 反彈", '停損': fmt_p(sl), '停利': fmt_p(tp), '建議': "🌟 5M 動能破底，等待反彈。"})
             return coin_signals
         except:
             return []
 
-    # 5 個執行緒並行運算，極大化掃描效率
     with ThreadPoolExecutor(max_workers=5) as executor:
         futures = [executor.submit(process_coin, item) for item in top_50_market]
         for future in as_completed(futures):
@@ -142,28 +133,21 @@ def run_radar_scan_multithread(top_50_market):
     return signals
 
 def analyze_single_coin(sym):
-    """AI 顧問專屬無阻擋高速通道：結合 1H 大戶防線與 5M 短線微觀結構"""
     exchange = ccxt.bingx({'enableRateLimit': False, 'timeout': 5000, 'options': {'defaultType': 'swap'}})
     try:
-        # 抓取並計算 1H 數據
         ohlcv_1h = exchange.fetch_ohlcv(sym, '1h', limit=210)
         df_1h = pd.DataFrame(ohlcv_1h, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
         ema200_1h = df_1h['close'].ewm(span=200, adjust=False).mean().iloc[-1]
         
-        # 抓取並計算 5M 數據
         ohlcv_5m = exchange.fetch_ohlcv(sym, '5m', limit=100)
         df_5m = pd.DataFrame(ohlcv_5m, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
         current_price = df_5m['close'].iloc[-1]
         ema200_5m = df_5m['close'].ewm(span=200, adjust=False).mean().iloc[-1]
         
-        # 1H 大戶結構 (宏觀)
         res_1h, sup_1h = get_overall_sr(df_1h, current_price)
-        
-        # 5M 散戶結構 (微觀近距離 S/R)
         res_5m = df_5m['high'].iloc[-20:-1].max()
         sup_5m = df_5m['low'].iloc[-20:-1].min()
         
-        # 5M 動能指標
         macd = df_5m.ta.macd(fast=12, slow=26, signal=9)
         macd_line = macd.iloc[-1, 0]
         signal_line = macd.iloc[-1, 2]
@@ -183,7 +167,7 @@ def analyze_single_coin(sym):
         return None
 
 # ==========================================
-# 介面渲染區塊 (UI 權限反轉：AI 顧問優先處理)
+# 介面渲染區塊
 # ==========================================
 all_symbols, top_50_market = fetch_market_data()
 
@@ -218,21 +202,17 @@ with tab2:
                 
                 is_long = "做多" in user_intent
                 
-                # 利潤空間計算 (距離 1H 防線的百分比)
                 room_up_1h = ((r_1h - p) / p) * 100
                 room_down_1h = ((p - s_1h) / p) * 100
                 
                 score = 0
-                st.markdown(f"### 🪙 {target_coin} | 當前價格: `{p:.4f}`")
+                st.markdown(f"### 🪙 {target_coin} | 當前價格: `{fmt_p(p)}`")
                 
-                # -----------------------------------
-                # 1. 大級別 1H 結構報告
-                # -----------------------------------
                 st.markdown("#### 📊 【宏觀 1H：大戶流動性與防線】")
                 st.write(f"在 SMC 邏輯中，1 小時線代表華爾街大戶的真實防守位置。")
                 st.write(f"- 📈 **1H 趨勢**：{'🟢 多頭順風' if t_1h == 'BULLISH' else '🔴 空頭弱勢'}")
-                st.write(f"- 🛡️ **上方大戶壓力位 (Supply)**：`{r_1h:.4f}` (距離 {room_up_1h:.2f}%)")
-                st.write(f"- 🛡️ **下方大戶支撐位 (Demand)**：`{s_1h:.4f}` (距離 {room_down_1h:.2f}%)")
+                st.write(f"- 🛡️ **上方大戶壓力位 (Supply)**：`{fmt_p(r_1h)}` (距離 {room_up_1h:.2f}%)")
+                st.write(f"- 🛡️ **下方大戶支撐位 (Demand)**：`{fmt_p(s_1h)}` (距離 {room_down_1h:.2f}%)")
                 
                 if is_long:
                     if t_1h == 'BULLISH': score += 2
@@ -241,22 +221,16 @@ with tab2:
                     if t_1h == 'BEARISH': score += 2
                     if room_down_1h > 2.0: score += 2
 
-                # -----------------------------------
-                # 2. 短線 5M 趨勢報告
-                # -----------------------------------
                 st.markdown("#### ⚡ 【微觀 5M：短線趨勢與散戶動能】")
                 st.write(f"Data Trader 強調：進場前必須確認短線沒有牆壁擋路，且動能必須支持你的方向。")
                 st.write(f"- 📈 **5M 趨勢**：{'🟢 短線強勢' if t_5m == 'BULLISH' else '🔴 短線偏弱'}")
-                st.write(f"- 🧱 **短線近距離壓力**：`{r_5m:.4f}`")
-                st.write(f"- 🧱 **短線近距離支撐**：`{s_5m:.4f}`")
+                st.write(f"- 🧱 **短線近距離壓力**：`{fmt_p(r_5m)}`")
+                st.write(f"- 🧱 **短線近距離支撐**：`{fmt_p(s_5m)}`")
                 st.write(f"- 🌪️ **短線 MACD 動能**：{'🟢 向上爆發中' if macd_up else '🔴 向下摜壓中'}")
                 
                 if is_long and t_5m == 'BULLISH' and macd_up: score += 2
                 if not is_long and t_5m == 'BEARISH' and not macd_up: score += 2
 
-                # -----------------------------------
-                # 3. 綜合戰術建議
-                # -----------------------------------
                 st.markdown("---")
                 if score >= 5:
                     st.success(f"### 🏆 SMC 綜合判定：完美共振 (極高勝率)")
@@ -289,7 +263,7 @@ with tab1:
                     card = st.success if "多" in sig['方向'] else st.error
                     card(f"**{sig['幣']}** | {sig['方向']}\n\n"
                          f"🎯 **推薦進場**：{sig['進場']}\n\n"
-                         f"🛑 **停損**：`{sig['停損']:.4f}` | 💰 **停利**：`{sig['停利']:.4f}`\n\n"
+                         f"🛑 **停損**：`{sig['停損']}` | 💰 **停利**：`{sig['停利']}`\n\n"
                          f"💡 {sig['建議']}")
             else:
                 st.info("⚪ 目前前 50 大強勢山寨幣皆無合適進場訊號。安全第一，請耐心等待。")
