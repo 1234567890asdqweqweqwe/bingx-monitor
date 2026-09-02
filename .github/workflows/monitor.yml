@@ -3,7 +3,7 @@ name: 資金費率與訊號監控機器人
 on:
   workflow_dispatch:
   schedule:
-    - cron: '*/15 * * * *'
+    - cron: '*/5 * * * *' # 改成每 5 分鐘自動掃描一次
 
 jobs:
   run-bot:
