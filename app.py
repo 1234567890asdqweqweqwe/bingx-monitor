@@ -5,14 +5,16 @@ import pandas_ta as ta
 import time
 from datetime import datetime, timezone
 from streamlit_autorefresh import st_autorefresh
+from concurrent.futures import ThreadPoolExecutor, as_completed
 
 st.set_page_config(page_title="AI 5M 極速雷達與專屬操盤顧問", layout="centered")
-st.title("🎯 AI 操盤系統 (Top 50 極速版)")
+st.title("🎯 AI 操盤系統 (Top 50 多執行緒極速版)")
 
 # ==========================================
 # 共用核心演算法
 # ==========================================
 def get_overall_sr(df_1h, current_price):
+    """計算 1H 大級別整體壓力與支撐"""
     df_1h['swing_high'] = df_1h['high'] == df_1h['high'].rolling(window=11, center=True).max()
     df_1h['swing_low'] = df_1h['low'] == df_1h['low'].rolling(window=11, center=True).min()
     swing_highs = df_1h[df_1h['swing_high']]['high'].dropna().tolist()
@@ -44,13 +46,15 @@ def fetch_market_data():
     return all_symbols, top_50
 
 @st.cache_data(ttl=60, show_spinner=False)
-def run_radar_scan(top_50_market):
-    '''將雷達掃描獨立封裝並快取，避免阻擋網頁按鈕互動'''
+def run_radar_scan_multithread(top_50_market):
+    """🚀 核心升級：使用多執行緒 (5倍速) 併發掃描"""
     signals = []
-    exchange = ccxt.bingx({'enableRateLimit': True, 'options': {'defaultType': 'swap'}})
     
-    for item in top_50_market:
+    def process_coin(item):
         sym = item['symbol']
+        # 為每個執行緒建立獨立的連線，確保安全與速度
+        exchange = ccxt.bingx({'enableRateLimit': True, 'options': {'defaultType': 'swap'}})
+        coin_signals = []
         try:
             ohlcv_4h = exchange.fetch_ohlcv(sym, '4h', limit=10)
             df_4h = pd.DataFrame(ohlcv_4h, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
@@ -67,6 +71,7 @@ def run_radar_scan(top_50_market):
             
             res_level, sup_level = get_overall_sr(df_1h, c_now_5m)
             
+            # 引擎 A：4H 區間假突破
             today_date = datetime.now(timezone.utc).date()
             first_4h = df_4h[(df_4h['datetime'].dt.date == today_date) & (df_4h['datetime'].dt.hour == 0)]
             range_high = first_4h['high'].values[0] if not first_4h.empty else None
@@ -79,15 +84,16 @@ def run_radar_scan(top_50_market):
                     if risk > 0 and (risk / c_now_5m) <= 0.02:
                         tp = min(c_now_5m + (2.5 * risk), res_level * 0.998)
                         if (tp - c_now_5m) > (risk * 1.2):
-                            signals.append({'幣': sym, '方向': '🟢 做多', '進場': f"`{range_low:.4f}` ~ `{c_now_5m:.4f}`", '停損': sl, '停利': tp, '建議': f"🛡️ 4H 假跌破，上方壓力 {res_level:.4f}。"})
+                            coin_signals.append({'幣': sym, '方向': '🟢 做多', '進場': f"`{range_low:.4f}` ~ `{c_now_5m:.4f}`", '停損': sl, '停利': tp, '建議': f"🛡️ 4H 假跌破，上方壓力 {res_level:.4f}。"})
                 elif c_prev2_5m > range_high and c_prev_5m < range_high:
                     sl = df_5m['high'].iloc[-5:-1].max()
                     risk = sl - c_now_5m
                     if risk > 0 and (risk / c_now_5m) <= 0.02:
                         tp = max(c_now_5m - (2.5 * risk), sup_level * 1.002)
                         if (c_now_5m - tp) > (risk * 1.2):
-                            signals.append({'幣': sym, '方向': '🔴 做空', '進場': f"`{c_now_5m:.4f}` ~ `{range_high:.4f}`", '停損': sl, '停利': tp, '建議': f"🛡️ 4H 假突破，下方支撐 {sup_level:.4f}。"})
+                            coin_signals.append({'幣': sym, '方向': '🔴 做空', '進場': f"`{c_now_5m:.4f}` ~ `{range_high:.4f}`", '停損': sl, '停利': tp, '建議': f"🛡️ 4H 假突破，下方支撐 {sup_level:.4f}。"})
 
+            # 引擎 B：5M 動能突破
             macd = df_5m.ta.macd(fast=12, slow=26, signal=9)
             macd_line = macd.iloc[-2, 0]
             signal_line = macd.iloc[-2, 2]
@@ -98,22 +104,29 @@ def run_radar_scan(top_50_market):
                 sl = df_5m['low'].iloc[-15:-2].min() * 0.998
                 tp = min(e_0382 + (2.5 * (e_0382 - sl)), res_level * 0.998)
                 if (tp - e_0382) > ((e_0382 - sl) * 1.2):
-                    signals.append({'幣': sym, '方向': '🟢 做多', '進場': f"`{e_0382:.4f}` 回踩", '停損': sl, '停利': tp, '建議': "🌟 動能向上突破，等待回踩。"})
+                    coin_signals.append({'幣': sym, '方向': '🟢 做多', '進場': f"`{e_0382:.4f}` 回踩", '停損': sl, '停利': tp, '建議': "🌟 動能向上突破，等待回踩。"})
             elif macd_line < signal_line and c_prev_5m < df_5m['low'].iloc[-15:-2].min():
                 swing_low = df_5m['low'].iloc[-3:].min()
                 e_0382 = swing_low + 0.382 * (df_5m['high'].iloc[-15:-2].max() - swing_low)
                 sl = df_5m['high'].iloc[-15:-2].max() * 1.002
                 tp = max(e_0382 - (2.5 * (sl - e_0382)), sup_level * 1.002)
                 if (e_0382 - tp) > ((sl - e_0382) * 1.2):
-                    signals.append({'幣': sym, '方向': '🔴 做空', '進場': f"`{e_0382:.4f}` 反彈", '停損': sl, '停利': tp, '建議': "🌟 動能向下破底，等待反彈。"})
-                    
+                    coin_signals.append({'幣': sym, '方向': '🔴 做空', '進場': f"`{e_0382:.4f}` 反彈", '停損': sl, '停利': tp, '建議': "🌟 動能向下破底，等待反彈。"})
+            return coin_signals
         except:
-            pass
-        time.sleep(0.05) 
+            return []
+
+    # 使用 5 個工人同時抓取資料，大幅縮短等待時間
+    with ThreadPoolExecutor(max_workers=5) as executor:
+        futures = [executor.submit(process_coin, item) for item in top_50_market]
+        for future in as_completed(futures):
+            result = future.result()
+            if result:
+                signals.extend(result)
+                
     return signals
 
 def analyze_single_coin(sym):
-    # 【核心升級】給 AI 開設獨立通道，不排隊、設定 5 秒超時
     exchange = ccxt.bingx({'enableRateLimit': False, 'timeout': 5000, 'options': {'defaultType': 'swap'}})
     try:
         ohlcv_1h = exchange.fetch_ohlcv(sym, '1h', limit=210)
@@ -140,44 +153,30 @@ def analyze_single_coin(sym):
         return None
 
 # ==========================================
-# 介面渲染與掃描區塊
+# 介面渲染區塊 (⚡ UI 權限反轉：AI 顧問優先處理)
 # ==========================================
 all_symbols, top_50_market = fetch_market_data()
 
-tab1, tab2 = st.tabs(["📡 前50大極速雷達 (自動推薦)", "🤖 AI 專屬操盤顧問 (自選幣種)"])
+tab1, tab2 = st.tabs(["📡 前50大極速雷達", "🤖 AI 專屬操盤顧問"])
 
-with tab1:
-    count = st_autorefresh(interval=60000, limit=None, key="auto_refresh")
-    st.caption(f"🔄 網頁每 60 秒自動更新 | 當前共監控成交量前 50 大活躍幣種")
-    
-    if len(top_50_market) > 0:
-        with st.spinner('📡 雷達正在背景高速運算中，這不會影響您使用 AI 顧問...'):
-            signals = run_radar_scan(top_50_market)
-            
-        if len(signals) > 0:
-            st.subheader(f"💡 發現 {len(signals)} 個 AI 推薦進場機會")
-            for sig in signals:
-                card = st.success if "多" in sig['方向'] else st.error
-                card(f"**{sig['幣']}** | {sig['方向']}\n\n"
-                     f"🎯 **推薦進場**：{sig['進場']}\n\n"
-                     f"🛑 **停損**：`{sig['停損']:.4f}` | 💰 **停利**：`{sig['停利']:.4f}`\n\n"
-                     f"💡 {sig['建議']}")
-        else:
-            st.info("⚪ 目前前 50 大幣種皆無合適進場訊號。安全第一，請耐心等待。")
-
+# 我們在程式碼中「先」處理 Tab 2 的按鈕，賦予它最高優先權！
 with tab2:
     st.subheader("🤖 問問 AI：這張單該不該下？")
+    ai_btn_clicked = False
     
     if all_symbols:
-        st.write("選擇全市場**任何**幣種，AI 會為你做最速盤面健檢。")
+        st.write("選擇全市場**任何**幣種，AI 會立刻為你做最速盤面健檢。")
         col1, col2 = st.columns(2)
         with col1:
             target_coin = st.selectbox("你想操作哪個幣？(可輸入搜尋)", all_symbols)
         with col2:
             user_intent = st.selectbox("你的計畫是？", ["我想做多 (Long) 🟢", "我想做空 (Short) 🔴"])
             
-        if st.button("🧠 請 AI 顧問分析"):
-            with st.spinner(f"正在以最高優先級即時分析 {target_coin} ..."):
+        ai_btn = st.button("🧠 請 AI 顧問分析")
+        
+        if ai_btn:
+            ai_btn_clicked = True # 標記按鈕已被按下
+            with st.spinner(f"⚡ AI 顧問啟動！正在為您即時解析 {target_coin} ..."):
                 analysis = analyze_single_coin(target_coin)
                 
             if analysis:
@@ -210,13 +209,13 @@ with tab2:
                 if is_long:
                     if room_up > 2.0:
                         score += 2
-                        feedback.append(f"✅ **【空間充足】** 距上方壓力 `{r:.4f}` 還有 +{room_up:.2f}%，有肉可吃。")
+                        feedback.append(f"✅ **【空間充足】** 距上方壓力 `{r:.4f}` 還有 +{room_up:.2f}%。")
                     else:
                         feedback.append(f"❌ **【撞牆風險】** 距上方壓力 `{r:.4f}` 僅剩 +{room_up:.2f}%，極易被打停損！")
                 else:
                     if room_down > 2.0:
                         score += 2
-                        feedback.append(f"✅ **【空間充足】** 距下方支撐 `{s:.4f}` 還有 -{room_down:.2f}% 的下跌空間。")
+                        feedback.append(f"✅ **【空間充足】** 距下方支撐 `{s:.4f}` 還有 -{room_down:.2f}%。")
                     else:
                         feedback.append(f"❌ **【撞地風險】** 距下方支撐 `{s:.4f}` 僅剩 -{room_down:.2f}%，極易軋空反彈！")
                         
@@ -227,13 +226,13 @@ with tab2:
                     feedback.append("⏳ **【動能衰退】** 短線動能偏弱，建議等待企穩再進。")
                 elif not is_long and not macd_up:
                     score += 1
-                    feedback.append("✅ **【動能充沛】** 短線空頭動能強勁，瀑布啟動中。")
+                    feedback.append("✅ **【動能充沛】** 短線空頭動能強勁。")
                 elif not is_long and macd_up:
                     feedback.append("⏳ **【動能衰退】** 短線動能偏多，此時做空極易遭遇反彈。")
 
                 if score >= 4:
                     st.success(f"### 📈 評分：強烈推薦 (高勝率)")
-                    st.write("符合 SMC 邏輯的完美進場點！趨勢、空間與動能皆對有利。")
+                    st.write("符合 SMC 邏輯的完美進場點！趨勢、空間與動能皆有利。")
                 elif score >= 2:
                     st.warning(f"### ⚖️ 評分：中性偏弱 (需謹慎)")
                     st.write("條件好壞參半，極可能面臨上下洗盤，請嚴格設定停損。")
@@ -247,3 +246,27 @@ with tab2:
                 st.info("💡 **風控叮嚀**：單筆保證金請固定輸入 **10 USDT**！")
             else:
                 st.error("無法取得即時數據，請稍後再試。")
+
+# 接著才處理 Tab 1 (雷達掃描)
+with tab1:
+    count = st_autorefresh(interval=60000, limit=None, key="auto_refresh")
+    st.caption(f"🔄 網頁每 60 秒自動更新 | 當前共監控成交量前 50 大活躍幣種")
+    
+    if len(top_50_market) > 0:
+        # 如果 AI 顧問按鈕被按下了，雷達直接讓路不執行！
+        if ai_btn_clicked:
+            st.warning("⏳ 正在為您優先解析 AI 顧問的需求，雷達掃描暫停一回合 (不會阻擋您的操作)！")
+        else:
+            with st.spinner('📡 雷達正在背景啟動【多執行緒】高速運算中...'):
+                signals = run_radar_scan_multithread(top_50_market)
+                
+            if len(signals) > 0:
+                st.subheader(f"💡 發現 {len(signals)} 個 AI 推薦進場機會")
+                for sig in signals:
+                    card = st.success if "多" in sig['方向'] else st.error
+                    card(f"**{sig['幣']}** | {sig['方向']}\n\n"
+                         f"🎯 **推薦進場**：{sig['進場']}\n\n"
+                         f"🛑 **停損**：`{sig['停損']:.4f}` | 💰 **停利**：`{sig['停利']:.4f}`\n\n"
+                         f"💡 {sig['建議']}")
+            else:
+                st.info("⚪ 目前前 50 大幣種皆無合適進場訊號。安全第一，請耐心等待。")
