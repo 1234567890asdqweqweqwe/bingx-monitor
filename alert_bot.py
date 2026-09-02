@@ -14,6 +14,7 @@ def send_telegram_message(message):
     requests.post(url, json={"chat_id": CHAT_ID, "text": message, "parse_mode": "Markdown"})
 
 def get_overall_sr(df_1h, current_price):
+    """計算 1H 大級別整體壓力與支撐"""
     df_1h['swing_high'] = df_1h['high'] == df_1h['high'].rolling(window=11, center=True).max()
     df_1h['swing_low'] = df_1h['low'] == df_1h['low'].rolling(window=11, center=True).min()
     swing_highs = df_1h[df_1h['swing_high']]['high'].dropna().tolist()
@@ -26,25 +27,40 @@ def get_overall_sr(df_1h, current_price):
 def main():
     exchange = ccxt.bingx({'enableRateLimit': True, 'options': {'defaultType': 'swap'}})
     now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-    print(f"[{now}] 啟動【S 級嚴格版：三重時間框架 + ADX 動能 + 1.5R 空間】...")
+    print(f"[{now}] 啟動【山寨幣 S 級狙擊版：三重時間框架 + ADX 動能 + 1.5R 空間】...")
     
     try:
         tickers = exchange.fetch_tickers()
         symbol_vol = [{'symbol': sym, 'volume': data['quoteVolume']} 
                       for sym, data in tickers.items() if sym.endswith(':USDT') and data.get('quoteVolume')]
-        top_50 = sorted(symbol_vol, key=lambda x: x['volume'], reverse=True)[:50]
     except Exception as e:
         return
 
-    blacklist = ['NVDA', 'TSLA', 'AAPL', 'MSFT', 'AMZN', 'GOOGL', 'META', 'COIN', 'SP500', 'NDX', 'DJI', 'GOLD', 'SILVER', 'NQ', 'BABA']
+    # ⛔ 終極黑名單：徹底封殺大盤、傳產與主流幣
+    blacklist = [
+        'GOLD', 'SILVER', 'XAU', 'XAG', 'WTI', 'BRENT', 'OIL', 'DXY', 
+        'NVDA', 'TSLA', 'AAPL', 'MSFT', 'AMZN', 'GOOGL', 'META', 'COIN', 'BABA', 'MSTR',
+        'SP500', 'NDX', 'DJI', 'NQ', 'US30', 'BTC', 'ETH'
+    ]
+
+    # 🛡️ 智慧名稱濾網：精準鎖定純正的山寨幣
+    filtered_vol = []
+    for item in symbol_vol:
+        base = item['symbol'].split('/')[0].split('-')[0].split(':')[0]
+        
+        if base in blacklist or 'NCSK' in base or 'MSTR' in base:
+            continue
+        if len(base) > 8 and not base.startswith('100'):
+            continue
+            
+        filtered_vol.append(item)
+
+    # 鎖定資金最強的前 50 大純正山寨幣
+    top_50 = sorted(filtered_vol, key=lambda x: x['volume'], reverse=True)[:50]
 
     for item in top_50:
         sym = item['symbol']
-        base_coin = sym.split('/')[0].split('-')[0].split(':')[0]
-        if base_coin in blacklist: continue
-            
         try:
-            # 1. 取得多重時間框架資料
             ohlcv_4h = exchange.fetch_ohlcv(sym, '4h', limit=50)
             df_4h = pd.DataFrame(ohlcv_4h, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
             df_4h['datetime'] = pd.to_datetime(df_4h['timestamp'], unit='ms')
@@ -62,31 +78,24 @@ def main():
             current_now_15m = df_15m['close'].iloc[-1]
             prev_close_15m = df_15m['close'].iloc[-3]
 
-            # 2. 計算 1H 整體支撐壓力
             resistance_level, support_level = get_overall_sr(df_1h, current_now_15m)
             
-            # 3. 計算 15M 動能 (ADX)
             df_15m.ta.adx(length=14, append=True)
             adx_val = df_15m['ADX_14'].iloc[-2] if 'ADX_14' in df_15m.columns else 0
 
-            # ==========================================
-            # S 級嚴格引擎 A：4H 區間假突破 (配合三重趨勢過濾)
-            # ==========================================
             today_date = datetime.now(timezone.utc).date()
             first_4h = df_4h[(df_4h['datetime'].dt.date == today_date) & (df_4h['datetime'].dt.hour == 0)]
             range_high = first_4h['high'].values[0] if not first_4h.empty else None
             range_low = first_4h['low'].values[0] if not first_4h.empty else None
             
-            if range_high and range_low and adx_val > 20: # 嚴格要求有動能
-                # 假跌破做多 (要求 4H 與 1H 皆為多頭)
+            if range_high and range_low and adx_val > 20: 
                 if prev_close_15m < range_low and current_close_15m > range_low and trend_4h == "BULLISH" and trend_1h == "BULLISH":
                     sl_price = df_15m['low'].iloc[-5:-1].min()
                     risk = current_now_15m - sl_price
                     if risk > 0 and (risk / current_now_15m) <= 0.03:
                         tp_price = min(current_now_15m + (2.5 * risk), resistance_level * 0.998)
-                        # 【S 級嚴格空間要求】：1.5 倍無障礙空間
                         if (tp_price - current_now_15m) >= (risk * 1.5):
-                            msg = (f"🔥 **【S 級嚴格訊號：大順風假跌破】** 🔥\n"
+                            msg = (f"🔥 **【山寨幣 S 級訊號：大順風假跌破】** 🔥\n"
                                    f"🪙 `{sym}` | 🟢 **強勢做多**\n"
                                    f"*(4H/1H 大趨勢保護中，主力洗盤結束)*\n\n"
                                    f"🎯 **推薦進場**：`{range_low:.4f}` ~ `{current_now_15m:.4f}`\n"
@@ -96,15 +105,13 @@ def main():
                             send_telegram_message(msg)
                             time.sleep(1)
                         
-                # 假突破做空 (要求 4H 與 1H 皆為空頭)
                 elif prev_close_15m > range_high and current_close_15m < range_high and trend_4h == "BEARISH" and trend_1h == "BEARISH":
                     sl_price = df_15m['high'].iloc[-5:-1].max()
                     risk = sl_price - current_now_15m
                     if risk > 0 and (risk / current_now_15m) <= 0.03:
                         tp_price = max(current_now_15m - (2.5 * risk), support_level * 1.002)
-                        # 【S 級嚴格空間要求】：1.5 倍無障礙空間
                         if (current_now_15m - tp_price) >= (risk * 1.5):
-                            msg = (f"🔥 **【S 級嚴格訊號：大順風假突破】** 🔥\n"
+                            msg = (f"🔥 **【山寨幣 S 級訊號：大順風假突破】** 🔥\n"
                                    f"🪙 `{sym}` | 🔴 **強勢做空**\n"
                                    f"*(4H/1H 大趨勢保護中，散戶追高被套)*\n\n"
                                    f"🎯 **推薦進場**：`{current_now_15m:.4f}` ~ `{range_high:.4f}`\n"
@@ -114,9 +121,6 @@ def main():
                             send_telegram_message(msg)
                             time.sleep(1)
 
-            # ==========================================
-            # S 級嚴格引擎 B：15M 淺回撤動能預測
-            # ==========================================
             macd = df_15m.ta.macd(fast=12, slow=26, signal=9)
             macd_line = macd.iloc[-2, 0]
             signal_line = macd.iloc[-2, 2]
@@ -132,7 +136,7 @@ def main():
                 tp_price = min(e_0382 + (2.5 * risk), resistance_level * 0.998)
                 
                 if (tp_price - e_0382) >= (risk * 1.5):
-                    msg = (f"💎 **【S 級嚴格訊號：順風波段起漲】** 💎\n"
+                    msg = (f"💎 **【山寨幣 S 級訊號：順風波段起漲】** 💎\n"
                            f"🪙 `{sym}` | 🟢 **強勢做多**\n\n"
                            f"🎯 **進場區間**：`{e_0618:.4f}` ~ `{e_0382:.4f}`\n"
                            f"🛑 **防守停損**：`{sl_price:.4f}` | 💰 **安全停利**：`{tp_price:.4f}`\n"
@@ -149,7 +153,7 @@ def main():
                 tp_price = max(e_0382 - (2.5 * risk), support_level * 1.002)
                 
                 if (e_0382 - tp_price) >= (risk * 1.5):
-                    msg = (f"💎 **【S 級嚴格訊號：順風波段起跌】** 💎\n"
+                    msg = (f"💎 **【山寨幣 S 級訊號：順風波段起跌】** 💎\n"
                            f"🪙 `{sym}` | 🔴 **強勢做空**\n\n"
                            f"🎯 **進場區間**：`{e_0382:.4f}` ~ `{e_0618:.4f}`\n"
                            f"🛑 **防守停損**：`{sl_price:.4f}` | 💰 **安全停利**：`{tp_price:.4f}`\n"
