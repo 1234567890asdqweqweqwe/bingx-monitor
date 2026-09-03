@@ -55,8 +55,8 @@ HTML_TEMPLATE = """
             </div>
             {% endfor %}
         {% else %}
-            <div style="text-align: center; padding: 50px; background: #1e293b; border-radius: 12px; color: #94a3b8;">
-                目前無符合條件的精準訊號，雷達持續背景掃描中...
+            <div style="text-align: center; padding: 50px; background: #1e293b; border-radius: 12px; color: #38bdf8; font-size: 1.3rem; font-weight: bold;">
+                請耐心等待進場機會吧!!!!!!!
             </div>
         {% endif %}
         
@@ -79,7 +79,6 @@ def background_scanner():
     while True:
         try:
             print("🔍 網頁雷達背景掃描中...")
-            # 1. 取得 BTC 趨勢
             df_btc = fetch_ohlcv('BTC-USDT', 250)
             if df_btc.empty: df_btc = fetch_ohlcv('BTC/USDT', 250)
             
@@ -91,7 +90,6 @@ def background_scanner():
                 if c_close > c_e200 and c_e50 > c_e200: btc_trend = 1
                 elif c_close < c_e200 and c_e50 < c_e200: btc_trend = -1
 
-            # 2. 抓取前 10 大強勢山寨幣
             tickers = exchange.fetch_tickers()
             blacklist = ['GOLD', 'SILVER', 'XAU', 'XAG', 'WTI', 'BRENT', 'OIL', 'DXY', 'BTC', 'ETH', 'USDT', 'USDC']
             symbol_vol = []
@@ -154,7 +152,7 @@ def background_scanner():
         except Exception as e:
             print(f"掃描發生錯誤: {e}")
         
-        time.sleep(300) # 每 5 分鐘自動掃描一次
+        time.sleep(300)
 
 @app.route('/')
 def index():
