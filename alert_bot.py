@@ -9,8 +9,8 @@ from datetime import datetime
 # ==========================================
 # ⚙️ 請填入你的 Telegram 機器人設定
 # ==========================================
-TELEGRAM_BOT_TOKEN = "你的BOT_TOKEN"
-TELEGRAM_CHAT_ID = "你的CHAT_ID"  # 你的個人或群組 Chat ID
+TELEGRAM_TOKEN = os.environ.get('TELEGRAM_TOKEN')
+CHAT_ID = os.environ.get('CHAT_ID')
 
 bot = telebot.TeleBot(TELEGRAM_BOT_TOKEN)
 exchange = ccxt.bingx({'enableRateLimit': True, 'options': {'defaultType': 'swap'}})
