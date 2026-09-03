@@ -1,7 +1,8 @@
 import ccxt
 import pandas as pd
 import pandas_ta as ta
-import requests
+import telebot
+import threading
 import time
 from datetime import datetime
 
@@ -9,17 +10,42 @@ from datetime import datetime
 # ⚙️ 請填入你的 Telegram 機器人設定
 # ==========================================
 TELEGRAM_BOT_TOKEN = "你的BOT_TOKEN"
-TELEGRAM_CHAT_ID = "你的CHAT_ID"
+TELEGRAM_CHAT_ID = "你的CHAT_ID"  # 你的個人或群組 Chat ID
 
+bot = telebot.TeleBot(TELEGRAM_BOT_TOKEN)
 exchange = ccxt.bingx({'enableRateLimit': True, 'options': {'defaultType': 'swap'}})
 
-def send_telegram_message(message):
-    url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
-    payload = {'chat_id': TELEGRAM_CHAT_ID, 'text': message, 'parse_mode': 'Markdown'}
+# 全域變數：追蹤你當下的總帳戶資金（預設為 100U，可隨時透過 Telegram 指令更新）
+user_capital = 100.0
+
+# --- Telegram 互動指令區 ---
+@bot.message_handler(commands=['capital', 'setcap'])
+def update_capital(message):
+    global user_capital
     try:
-        requests.post(url, json=payload, timeout=10)
+        parts = message.text.split()
+        if len(parts) > 1:
+            user_capital = float(parts[1])
+            bot.reply_to(message, f"✅ 帳戶資金已更新為: <b>{user_capital} USDT</b>\n接下來的訊號將自動以此金額計算複利倉位！", parse_mode='HTML')
+        else:
+            bot.reply_to(message, f"📌 當前追蹤資金: <b>{user_capital} USDT</b>\n使用方式: <code>/capital 108.46</code>", parse_mode='HTML')
     except Exception as e:
-        print(f"Telegram 發送失敗: {e}")
+        bot.reply_to(message, "❌ 格式錯誤，請輸入數字，例如: <code>/capital 108.46</code>", parse_mode='HTML')
+
+@bot.message_handler(commands=['status'])
+def show_status(message):
+    risk_amount = user_capital * 0.02
+    margin_amount = user_capital * 0.20
+    status_msg = (
+        f"📊 <b>【實盤複利狀態】</b>\n"
+        f"━━━━━━━━━━━━━━━━━━━\n"
+        f"💳 當前總資金: <code>{user_capital:.2f} USDT</code>\n"
+        f"⚠️ 單筆最大風險 (2%): <code>{risk_amount:.2f} USDT</code>\n"
+        f"💰 建議保證金 (20%): <code>{margin_amount:.2f} USDT</code> (10x槓桿)\n"
+        f"━━━━━━━━━━━━━━━━━━━\n"
+        f"💡 隨時可輸入 <code>/capital 金額</code> 來更新你的本金！"
+    )
+    bot.reply_to(message, status_msg, parse_mode='HTML')
 
 def fetch_ohlcv(symbol, limit=200):
     try:
@@ -28,9 +54,10 @@ def fetch_ohlcv(symbol, limit=200):
     except:
         return pd.DataFrame()
 
-def scan_and_alert():
-    print("🤖 Telegram 智慧盯盤機器人已啟動 (前 10 大主流幣 + BTC 濾網模式)...")
-    sent_signals = set() # 防止重複推播同一根 K 線的訊號
+# --- 背景掃描與自動推播執行緒 ---
+def market_scanner_loop():
+    print("🤖 Telegram 智慧盯盤機器人已啟動 (具備動態複利計算功能)...")
+    sent_signals = set()
 
     while True:
         try:
@@ -81,9 +108,12 @@ def scan_and_alert():
                 bos_bull = df['close'].iloc[i-1] > df['high'].iloc[i-10:i-2].max()
                 bos_bear = df['close'].iloc[i-1] < df['low'].iloc[i-10:i-2].min()
 
-                # 檢查是否發送過
                 signal_key = f"{sym}_{timestamp}"
                 if signal_key in sent_signals: continue
+
+                # 動態計算當下複利倉位大小
+                margin_amount = user_capital * 0.20  # 20% 保證金
+                risk_amount = user_capital * 0.02    # 2% 風險金額
 
                 if adx_val > 25:
                     if macd_line > signal_line and bos_bull and trend_up and btc_trend == 1:
@@ -102,9 +132,13 @@ def scan_and_alert():
                                 f"🎯 TP1 (1R保本半倉): `{tp1:.4f}`\n"
                                 f"🎯 TP2 (2R完全指名): `{tp2:.4f}`\n"
                                 f"━━━━━━━━━━━━━━━━━━━\n"
+                                f"💳 當前資金: `{user_capital:.2f}U`\n"
+                                f"💰 **建議下單保證金 (20%): `{margin_amount:.2f}U` (10x)**\n"
+                                f"⚠️ 單筆風控金額 (2%): `{risk_amount:.2f}U`\n"
+                                f"━━━━━━━━━━━━━━━━━━━\n"
                                 f"⏰ 時間: {datetime.utcnow().strftime('%m-%d %H:%M')} UTC"
                             )
-                            send_telegram_message(msg)
+                            bot.send_message(TELEGRAM_CHAT_ID, msg, parse_mode='Markdown')
                             sent_signals.add(signal_key)
 
                     elif macd_line < signal_line and bos_bear and trend_down and btc_trend == -1:
@@ -123,16 +157,25 @@ def scan_and_alert():
                                 f"🎯 TP1 (1R保本半倉): `{tp1:.4f}`\n"
                                 f"🎯 TP2 (2R完全指名): `{tp2:.4f}`\n"
                                 f"━━━━━━━━━━━━━━━━━━━\n"
+                                f"💳 當前資金: `{user_capital:.2f}U`\n"
+                                f"💰 **建議下單保證金 (20%): `{margin_amount:.2f}U` (10x)**\n"
+                                f"⚠️ 單筆風控金額 (2%): `{risk_amount:.2f}U`\n"
+                                f"━━━━━━━━━━━━━━━━━━━\n"
                                 f"⏰ 時間: {datetime.utcnow().strftime('%m-%d %H:%M')} UTC"
                             )
-                            send_telegram_message(msg)
+                            bot.send_message(TELEGRAM_CHAT_ID, msg, parse_mode='Markdown')
                             sent_signals.add(signal_key)
 
         except Exception as e:
             print(f"盯盤主迴圈發生錯誤: {e}")
         
-        # 每小時檢查一次 1H K 線是否收盤更新
         time.sleep(3600)
 
 if __name__ == '__main__':
-    scan_and_alert()
+    # 啟動背景掃描執行緒
+    scanner_thread = threading.Thread(target=market_scanner_loop, daemon=True)
+    scanner_thread.start()
+    
+    # 啟動 Telegram 機器人監聽指令（如 /capital）
+    print("🚀 Telegram 互動機器人已開始接聽指令...")
+    bot.infinity_polling()
