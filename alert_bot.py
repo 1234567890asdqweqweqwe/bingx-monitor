@@ -1,97 +1,138 @@
-import ccxt, requests, os, time
-import pandas as pd, pandas_ta as ta
-from datetime import datetime, timezone
+import ccxt
+import pandas as pd
+import pandas_ta as ta
+import requests
+import time
+from datetime import datetime
 
-TELEGRAM_TOKEN = os.environ.get('TELEGRAM_TOKEN')
-CHAT_ID = os.environ.get('CHAT_ID')
+# ==========================================
+# ⚙️ 請填入你的 Telegram 機器人設定
+# ==========================================
+TELEGRAM_BOT_TOKEN = "你的BOT_TOKEN"
+TELEGRAM_CHAT_ID = "你的CHAT_ID"
+
+exchange = ccxt.bingx({'enableRateLimit': True, 'options': {'defaultType': 'swap'}})
 
 def send_telegram_message(message):
-    requests.post(f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage", 
-                  json={"chat_id": CHAT_ID, "text": message, "parse_mode": "Markdown"})
-
-def fmt_p(p):
-    if pd.isna(p) or p is None: return "0"
-    if p < 0.0001: return f"{p:.8f}"
-    elif p < 1: return f"{p:.6f}"
-    else: return f"{p:.4f}"
-
-def main():
-    exchange = ccxt.bingx({'enableRateLimit': True, 'options': {'defaultType': 'swap'}})
-    print(f"[{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] 啟動【1H 狙擊手級】掃描...")
-    
+    url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
+    payload = {'chat_id': TELEGRAM_CHAT_ID, 'text': message, 'parse_mode': 'Markdown'}
     try:
-        tickers = exchange.fetch_tickers()
-        symbol_vol = [{'symbol': s, 'volume': d.get('quoteVolume', 0)} for s, d in tickers.items() if s.endswith(':USDT')]
-    except: return
+        requests.post(url, json=payload, timeout=10)
+    except Exception as e:
+        print(f"Telegram 發送失敗: {e}")
 
-    blacklist = [
-        'GOLD', 'SILVER', 'XAU', 'XAG', 'WTI', 'BRENT', 'OIL', 'DXY', 
-        'NVDA', 'TSLA', 'AAPL', 'MSFT', 'AMZN', 'GOOGL', 'META', 'COIN', 'BABA', 'MSTR',
-        'SP500', 'NDX', 'DJI', 'NQ', 'US30', 'BTC', 'ETH',
-        'XAUT', 'PAXG', 'USDC', 'FDUSD', 'TUSD', 'USDD', 'EURT', 'BUSD'
-    ]
+def fetch_ohlcv(symbol, limit=200):
+    try:
+        ohlcv = exchange.fetch_ohlcv(symbol, '1h', limit=limit)
+        return pd.DataFrame(ohlcv, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
+    except:
+        return pd.DataFrame()
 
-    filtered_vol = []
-    for item in symbol_vol:
-        base = item['symbol'].split('/')[0].split('-')[0].split(':')[0]
-        if base in blacklist or 'NCSK' in base or 'MSTR' in base: continue
-        if len(base) > 8 and not base.startswith('100'): continue
-        if item['volume'] < 10000000: continue
-        filtered_vol.append(item)
+def scan_and_alert():
+    print("🤖 Telegram 智慧盯盤機器人已啟動 (前 10 大主流幣 + BTC 濾網模式)...")
+    sent_signals = set() # 防止重複推播同一根 K 線的訊號
 
-    top_50 = sorted(filtered_vol, key=lambda x: x['volume'], reverse=True)[:50]
-
-    for item in top_50:
-        sym = item['symbol']
+    while True:
         try:
-            df_1h = pd.DataFrame(exchange.fetch_ohlcv(sym, '1h', limit=150), columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
-            df_1h.ta.macd(fast=12, slow=26, signal=9, append=True)
-            df_1h.ta.adx(length=14, append=True)
-            df_1h['ema200'] = df_1h['close'].ewm(span=200, adjust=False).mean()
-            df_1h['ema50'] = df_1h['close'].ewm(span=50, adjust=False).mean()
-
-            c_now = df_1h['close'].iloc[-1]
-            macd_line = df_1h['MACD_12_26_9'].iloc[-2]
-            signal_line = df_1h['MACDs_12_26_9'].iloc[-2]
-            adx_val = df_1h['ADX_14'].iloc[-2]
+            # 1. 取得 BTC 大盤趨勢
+            df_btc = fetch_ohlcv('BTC-USDT', 250)
+            if df_btc.empty: df_btc = fetch_ohlcv('BTC/USDT', 250)
             
-            trend_up = c_now > df_1h['ema200'].iloc[-1] and df_1h['ema50'].iloc[-1] > df_1h['ema200'].iloc[-1]
-            trend_down = c_now < df_1h['ema200'].iloc[-1] and df_1h['ema50'].iloc[-1] < df_1h['ema200'].iloc[-1]
+            btc_trend = 0
+            if not df_btc.empty:
+                df_btc['ema200'] = df_btc['close'].ewm(span=200, adjust=False).mean()
+                df_btc['ema50'] = df_btc['close'].ewm(span=50, adjust=False).mean()
+                c_close, c_e200, c_e50 = df_btc['close'].iloc[-1], df_btc['ema200'].iloc[-1], df_btc['ema50'].iloc[-1]
+                if c_close > c_e200 and c_e50 > c_e200: btc_trend = 1
+                elif c_close < c_e200 and c_e50 < c_e200: btc_trend = -1
+
+            # 2. 抓取前 10 大強勢山寨幣
+            tickers = exchange.fetch_tickers()
+            blacklist = ['GOLD', 'SILVER', 'XAU', 'XAG', 'WTI', 'BRENT', 'OIL', 'DXY', 'BTC', 'ETH', 'USDT', 'USDC']
+            symbol_vol = []
+            for sym, data in tickers.items():
+                vol = data.get('quoteVolume', 0)
+                if sym.endswith(':USDT') and vol > 10000000:
+                    base = sym.split('/')[0].split('-')[0].split(':')[0]
+                    if base not in blacklist and len(base) <= 8:
+                        symbol_vol.append({'symbol': sym, 'volume': vol})
             
-            bos_bull = df_1h['close'].iloc[-2] > df_1h['high'].iloc[-11:-3].max()
-            bos_bear = df_1h['close'].iloc[-2] < df_1h['low'].iloc[-11:-3].min()
+            top10_symbols = [item['symbol'] for item in sorted(symbol_vol, key=lambda x: x['volume'], reverse=True)[:10]]
+            
+            for sym in top10_symbols:
+                df = fetch_ohlcv(sym, 250)
+                if len(df) < 200: continue
+                
+                df.ta.macd(fast=12, slow=26, signal=9, append=True)
+                df.ta.adx(length=14, append=True)
+                df['ema200'] = df['close'].ewm(span=200, adjust=False).mean()
+                df['ema50'] = df['close'].ewm(span=50, adjust=False).mean()
+                
+                i = len(df) - 1
+                current = df.iloc[i]
+                timestamp = int(current['timestamp'])
+                
+                macd_line = df['MACD_12_26_9'].iloc[i-1]
+                signal_line = df['MACDs_12_26_9'].iloc[i-1]
+                adx_val = df['ADX_14'].iloc[i-1]
+                
+                trend_up = current['close'] > current['ema200'] and current['ema50'] > current['ema200']
+                trend_down = current['close'] < current['ema200'] and current['ema50'] < current['ema200']
+                bos_bull = df['close'].iloc[i-1] > df['high'].iloc[i-10:i-2].max()
+                bos_bear = df['close'].iloc[i-1] < df['low'].iloc[i-10:i-2].min()
 
-            if adx_val > 25:
-                if macd_line > signal_line and bos_bull and trend_up:
-                    sl = df_1h['low'].iloc[-6:-2].min() * 0.995
-                    risk = c_now - sl
-                    if risk > 0 and 0.01 <= (risk / c_now) <= 0.05:
-                        tp1 = c_now + risk
-                        tp2 = c_now + (2.0 * risk)
-                        msg = (f"💎 **【山寨幣 1H 狙擊：順風起漲】** 💎\n"
-                               f"🪙 `{sym}` | 🟢 **強勢做多**\n"
-                               f"🎯 **推薦進場**：`{fmt_p(c_now)}`\n"
-                               f"🛑 **防守停損**：`{fmt_p(sl)}`\n\n"
-                               f"💰 **保守 (1R)**：`{fmt_p(tp1)}` *(平倉一半)*\n"
-                               f"💰 **標準 (2R)**：`{fmt_p(tp2)}`")
-                        send_telegram_message(msg)
-                        time.sleep(1)
+                # 檢查是否發送過
+                signal_key = f"{sym}_{timestamp}"
+                if signal_key in sent_signals: continue
 
-                elif macd_line < signal_line and bos_bear and trend_down:
-                    sl = df_1h['high'].iloc[-6:-2].max() * 1.005
-                    risk = sl - c_now
-                    if risk > 0 and 0.01 <= (risk / c_now) <= 0.05:
-                        tp1 = c_now - risk
-                        tp2 = c_now - (2.0 * risk)
-                        msg = (f"💎 **【山寨幣 1H 狙擊：順風起跌】** 💎\n"
-                               f"🪙 `{sym}` | 🔴 **強勢做空**\n"
-                               f"🎯 **推薦進場**：`{fmt_p(c_now)}`\n"
-                               f"🛑 **防守停損**：`{fmt_p(sl)}`\n\n"
-                               f"💰 **保守 (1R)**：`{fmt_p(tp1)}` *(平倉一半)*\n"
-                               f"💰 **標準 (2R)**：`{fmt_p(tp2)}`")
-                        send_telegram_message(msg)
-                        time.sleep(1)
-        except: pass
+                if adx_val > 25:
+                    if macd_line > signal_line and bos_bull and trend_up and btc_trend == 1:
+                        entry = current['close']
+                        sl = df['low'].iloc[i-5:i-1].min() * 0.995
+                        risk = entry - sl
+                        if risk > 0 and 0.01 <= (risk / entry) <= 0.05:
+                            tp1 = entry + risk
+                            tp2 = entry + (2.0 * risk)
+                            msg = (
+                                f"🟢 **【SMC 實盤多單訊號】**\n"
+                                f"━━━━━━━━━━━━━━━━━━━\n"
+                                f"📌 標的: `{sym.split('/')[0]}`\n"
+                                f"📍 進場價 (Entry): `{entry:.4f}`\n"
+                                f"🛑 建議停損 (SL): `{sl:.4f}`\n"
+                                f"🎯 TP1 (1R保本半倉): `{tp1:.4f}`\n"
+                                f"🎯 TP2 (2R完全指名): `{tp2:.4f}`\n"
+                                f"━━━━━━━━━━━━━━━━━━━\n"
+                                f"⏰ 時間: {datetime.utcnow().strftime('%m-%d %H:%M')} UTC"
+                            )
+                            send_telegram_message(msg)
+                            sent_signals.add(signal_key)
+
+                    elif macd_line < signal_line and bos_bear and trend_down and btc_trend == -1:
+                        entry = current['close']
+                        sl = df['high'].iloc[i-5:i-1].max() * 1.005
+                        risk = sl - entry
+                        if risk > 0 and 0.01 <= (risk / entry) <= 0.05:
+                            tp1 = entry - risk
+                            tp2 = entry - (2.0 * risk)
+                            msg = (
+                                f"🔴 **【SMC 實盤空單訊號】**\n"
+                                f"━━━━━━━━━━━━━━━━━━━\n"
+                                f"📌 標的: `{sym.split('/')[0]}`\n"
+                                f"📍 進場價 (Entry): `{entry:.4f}`\n"
+                                f"🛑 建議停損 (SL): `{sl:.4f}`\n"
+                                f"🎯 TP1 (1R保本半倉): `{tp1:.4f}`\n"
+                                f"🎯 TP2 (2R完全指名): `{tp2:.4f}`\n"
+                                f"━━━━━━━━━━━━━━━━━━━\n"
+                                f"⏰ 時間: {datetime.utcnow().strftime('%m-%d %H:%M')} UTC"
+                            )
+                            send_telegram_message(msg)
+                            sent_signals.add(signal_key)
+
+        except Exception as e:
+            print(f"盯盤主迴圈發生錯誤: {e}")
+        
+        # 每小時檢查一次 1H K 線是否收盤更新
+        time.sleep(3600)
 
 if __name__ == '__main__':
-    main()
+    scan_and_alert()
