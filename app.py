@@ -55,7 +55,7 @@ HTML_TEMPLATE = """
             </div>
             {% endfor %}
         {% else %}
-            <div style="text-align: center; padding: 50px; background: #1e293b; border-radius: 12px; color: #38bdf8; font-size: 1.3rem; font-weight: bold;">
+            <div style="text-align: center; padding: 60px; background: #1e293b; border-radius: 12px; color: #38bdf8; font-size: 1.4rem; font-weight: bold; letter-spacing: 1px;">
                 請耐心等待進場機會吧!!!!!!!
             </div>
         {% endif %}
