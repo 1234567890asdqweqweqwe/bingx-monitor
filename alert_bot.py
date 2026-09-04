@@ -1,13 +1,13 @@
 import ccxt
 import pandas as pd
-from ta.trend import MACD, ADXIndicator  # 改用完全支援 Python 3.14 的 ta 套件
+from ta.trend import MACD, ADXIndicator  # 這裡已經換成支援 3.14 的 ta 套件了！
 import telebot
 import threading
 import time
 from datetime import datetime
 
 # ==========================================
-# ⚙️ Telegram 機器人設定 (已自動填入)
+# ⚙️ Telegram 機器人設定
 # ==========================================
 TELEGRAM_BOT_TOKEN = "7749949229:AAFbtmZvshpWbONAh3wfHzxM8gy2wansY5A"
 TELEGRAM_CHAT_ID = "5790520659"
@@ -108,7 +108,7 @@ def market_scanner_loop():
                 df = fetch_ohlcv(sym, 250)
                 if len(df) < 200: continue
                 
-                # ==== 指標計算改用 ta 套件 ====
+                # ==== 指標計算使用 ta 套件 ====
                 macd_ind = MACD(close=df['close'], window_slow=26, window_fast=12, window_sign=9)
                 df['MACD_line'] = macd_ind.macd()
                 df['MACD_signal'] = macd_ind.macd_signal()
