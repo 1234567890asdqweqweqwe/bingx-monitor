@@ -1,18 +1,17 @@
 import ccxt
 import pandas as pd
-from ta.trend import MACD, ADXIndicator  # 這裡已經換成支援 3.14 的 ta 套件了！
+from ta.trend import MACD, ADXIndicator 
 import telebot
 import threading
 import time
 from datetime import datetime
 
 # ==========================================
-# ⚙️ Telegram 機器人設定
+# ⚙️ Telegram 機器人設定 (已填入專屬金鑰)
 # ==========================================
 TELEGRAM_BOT_TOKEN = "7749949229:AAFbtmZvshpWbONAh3wfHzxM8gy2wansY5A"
 TELEGRAM_CHAT_ID = "5790520659"
 
-# 初始化機器人與交易所
 bot = telebot.TeleBot(TELEGRAM_BOT_TOKEN)
 exchange = ccxt.bingx({'enableRateLimit': True, 'options': {'defaultType': 'swap'}})
 
@@ -22,11 +21,11 @@ user_capital = 100.0
 def send_welcome(message):
     welcome_text = (
         "🤖 **歡迎使用 SMC 實盤智慧盯盤機器人！**\n\n"
-        "我會在背景 24 小時幫你監控【前 10 大強勢幣 + BTC 大盤】，並自動計算複利保證金。\n\n"
+        "我會在背景 24 小時幫你監控【前 10 大強勢幣 + BTC 大盤】，並使用黃金 2R 參數為你發送高勝率訊號。\n\n"
         "🛠 **可用指令列表：**\n"
         "👉 `/status` - 查看當前總資金與下單建議金額\n"
         "👉 `/capital 150` - 更新你的最新總資金為 150U\n"
-        "👉 `/test` - 發送一則測試訊號，確認系統正常\n"
+        "👉 `/test` - 發送一則測試訊號\n"
         "👉 `/help` - 顯示本選單"
     )
     bot.reply_to(message, welcome_text, parse_mode='Markdown')
@@ -54,14 +53,13 @@ def show_status(message):
         f"💳 當前總資金: `{user_capital:.2f} USDT`\n"
         f"⚠️ 單筆最大風險 (2%): `{risk_amount:.2f} USDT`\n"
         f"💰 建議保證金 (20%): `{margin_amount:.2f} USDT` (配合10x槓桿)\n"
-        f"━━━━━━━━━━━━━━━━━━━\n"
-        f"💡 隨時輸入 `/capital 金額` 來更新本金！"
+        f"━━━━━━━━━━━━━━━━━━━"
     )
     bot.reply_to(message, status_msg, parse_mode='Markdown')
 
 @bot.message_handler(commands=['test'])
 def test_signal(message):
-    bot.reply_to(message, "✅ 測試成功！機器人推播功能 100% 正常，我正在背景幫你盯盤中👀")
+    bot.reply_to(message, "✅ 測試成功！機器人推播功能 100% 正常，雷達掃描引擎運作中👀")
 
 def fetch_ohlcv(symbol, limit=200):
     try:
@@ -71,11 +69,12 @@ def fetch_ohlcv(symbol, limit=200):
         return pd.DataFrame()
 
 def market_scanner_loop():
-    print("🤖 背景掃描引擎已啟動...")
+    print("🤖 背景掃描引擎已啟動 (全市場 Top 10 + 黃金參數)...")
     sent_signals = set()
 
     while True:
         try:
+            # 1. 取得 BTC 大盤濾網
             df_btc = fetch_ohlcv('BTC-USDT', 250)
             if df_btc.empty: df_btc = fetch_ohlcv('BTC/USDT', 250)
             
@@ -90,6 +89,7 @@ def market_scanner_loop():
                 if c_close > c_e200 and c_e50 > c_e200: btc_trend = 1
                 elif c_close < c_e200 and c_e50 < c_e200: btc_trend = -1
 
+            # 2. 動態篩選 Top 10 強勢幣
             try: tickers = exchange.fetch_tickers()
             except: tickers = {}
             
@@ -104,11 +104,11 @@ def market_scanner_loop():
             
             top10_symbols = [item['symbol'] for item in sorted(symbol_vol, key=lambda x: x['volume'], reverse=True)[:10]]
             
+            # 3. 逐一計算指標與發送訊號
             for sym in top10_symbols:
                 df = fetch_ohlcv(sym, 250)
                 if len(df) < 200: continue
                 
-                # ==== 指標計算使用 ta 套件 ====
                 macd_ind = MACD(close=df['close'], window_slow=26, window_fast=12, window_sign=9)
                 df['MACD_line'] = macd_ind.macd()
                 df['MACD_signal'] = macd_ind.macd_signal()
@@ -118,7 +118,6 @@ def market_scanner_loop():
                 
                 df['ema200'] = df['close'].ewm(span=200, adjust=False).mean()
                 df['ema50'] = df['close'].ewm(span=50, adjust=False).mean()
-                # ==============================
                 
                 i = len(df) - 1
                 current = df.iloc[i]
@@ -140,15 +139,16 @@ def market_scanner_loop():
                 margin_amount = user_capital * 0.20  
                 risk_amount = user_capital * 0.02    
 
-                # 🚀 買進
-                if adx_val > 25:
+                # 🏆 核心：套用回測驗證的黃金參數
+                if adx_val > 25: # 參數 1: 嚴格趨勢過濾
+                    # 🟢 多單進場
                     if macd_line > signal_line and bos_bull and trend_up and btc_trend == 1:
                         entry = current['close']
-                        sl = df['low'].iloc[i-5:i-1].min() * 0.995
+                        sl = df['low'].iloc[i-5:i-1].min() * 0.995 # 參數 2: 0.5% 緊湊防守
                         risk = entry - sl
                         if risk > 0 and 0.01 <= (risk / entry) <= 0.05:
                             tp1 = entry + risk
-                            tp2 = entry + (2.0 * risk)
+                            tp2 = entry + (2.0 * risk) # 參數 3: 黃金 2R 停利
                             msg = (
                                 f"🟢 **【SMC 實盤多單訊號】**\n"
                                 f"━━━━━━━━━━━━━━━━━━━\n"
@@ -167,14 +167,14 @@ def market_scanner_loop():
                             bot.send_message(TELEGRAM_CHAT_ID, msg, parse_mode='Markdown')
                             sent_signals.add(signal_key)
 
-                    # 🔴 賣出
+                    # 🔴 空單進場
                     elif macd_line < signal_line and bos_bear and trend_down and btc_trend == -1:
                         entry = current['close']
-                        sl = df['high'].iloc[i-5:i-1].max() * 1.005
+                        sl = df['high'].iloc[i-5:i-1].max() * 1.005 # 參數 2: 0.5% 緊湊防守
                         risk = sl - entry
                         if risk > 0 and 0.01 <= (risk / entry) <= 0.05:
                             tp1 = entry - risk
-                            tp2 = entry - (2.0 * risk)
+                            tp2 = entry - (2.0 * risk) # 參數 3: 黃金 2R 停利
                             msg = (
                                 f"🔴 **【SMC 實盤空單訊號】**\n"
                                 f"━━━━━━━━━━━━━━━━━━━\n"
@@ -200,11 +200,11 @@ def market_scanner_loop():
 
 if __name__ == '__main__':
     try:
-        startup_msg = "🚀 **系統啟動成功！**\n機器人已開始在背景監控前 10 大強勢幣。你可以隨時輸入 `/help` 查看指令。"
+        startup_msg = "🚀 **系統啟動成功！**\n機器人已套用【黃金 2R 參數】，開始在背景為您監控全市場前 10 大強勢幣。輸入 `/help` 查看指令。"
         bot.send_message(TELEGRAM_CHAT_ID, startup_msg, parse_mode='Markdown')
         print("✅ 開機通知已發送至 Telegram。")
     except Exception as e:
-        print(f"❌ 傳送開機通知失敗，請檢查 TOKEN 與 CHAT_ID 是否正確。錯誤原因: {e}")
+        print(f"❌ 傳送開機通知失敗，錯誤原因: {e}")
 
     scanner_thread = threading.Thread(target=market_scanner_loop, daemon=True)
     scanner_thread.start()
