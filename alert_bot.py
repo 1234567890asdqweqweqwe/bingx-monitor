@@ -1,13 +1,13 @@
 import ccxt
 import pandas as pd
-import pandas_ta as ta
+from ta.trend import MACD, ADXIndicator  # 改用完全支援 Python 3.14 的 ta 套件
 import telebot
 import threading
 import time
 from datetime import datetime
 
 # ==========================================
-# ⚙️ 請填入你的 Telegram 機器人設定
+# ⚙️ Telegram 機器人設定 (已自動填入)
 # ==========================================
 TELEGRAM_BOT_TOKEN = "7749949229:AAFbtmZvshpWbONAh3wfHzxM8gy2wansY5A"
 TELEGRAM_CHAT_ID = "5790520659"
@@ -16,12 +16,8 @@ TELEGRAM_CHAT_ID = "5790520659"
 bot = telebot.TeleBot(TELEGRAM_BOT_TOKEN)
 exchange = ccxt.bingx({'enableRateLimit': True, 'options': {'defaultType': 'swap'}})
 
-# 全域變數：追蹤你當下的總帳戶資金
 user_capital = 100.0
 
-# ==========================================
-# 📱 Telegram 互動指令區
-# ==========================================
 @bot.message_handler(commands=['start', 'help'])
 def send_welcome(message):
     welcome_text = (
@@ -59,7 +55,7 @@ def show_status(message):
         f"⚠️ 單筆最大風險 (2%): `{risk_amount:.2f} USDT`\n"
         f"💰 建議保證金 (20%): `{margin_amount:.2f} USDT` (配合10x槓桿)\n"
         f"━━━━━━━━━━━━━━━━━━━\n"
-        f"💡 賺錢或虧錢後，隨時輸入 `/capital 金額` 來更新本金！"
+        f"💡 隨時輸入 `/capital 金額` 來更新本金！"
     )
     bot.reply_to(message, status_msg, parse_mode='Markdown')
 
@@ -67,9 +63,6 @@ def show_status(message):
 def test_signal(message):
     bot.reply_to(message, "✅ 測試成功！機器人推播功能 100% 正常，我正在背景幫你盯盤中👀")
 
-# ==========================================
-# 🔍 背景掃描與自動推播核心
-# ==========================================
 def fetch_ohlcv(symbol, limit=200):
     try:
         ohlcv = exchange.fetch_ohlcv(symbol, '1h', limit=limit)
@@ -83,7 +76,6 @@ def market_scanner_loop():
 
     while True:
         try:
-            # 1. 取得 BTC 大盤趨勢
             df_btc = fetch_ohlcv('BTC-USDT', 250)
             if df_btc.empty: df_btc = fetch_ohlcv('BTC/USDT', 250)
             
@@ -98,7 +90,6 @@ def market_scanner_loop():
                 if c_close > c_e200 and c_e50 > c_e200: btc_trend = 1
                 elif c_close < c_e200 and c_e50 < c_e200: btc_trend = -1
 
-            # 2. 抓取前 10 大強勢山寨幣
             try: tickers = exchange.fetch_tickers()
             except: tickers = {}
             
@@ -117,37 +108,39 @@ def market_scanner_loop():
                 df = fetch_ohlcv(sym, 250)
                 if len(df) < 200: continue
                 
-                df.ta.macd(fast=12, slow=26, signal=9, append=True)
-                df.ta.adx(length=14, append=True)
+                # ==== 指標計算改用 ta 套件 ====
+                macd_ind = MACD(close=df['close'], window_slow=26, window_fast=12, window_sign=9)
+                df['MACD_line'] = macd_ind.macd()
+                df['MACD_signal'] = macd_ind.macd_signal()
+                
+                adx_ind = ADXIndicator(high=df['high'], low=df['low'], close=df['close'], window=14)
+                df['ADX'] = adx_ind.adx()
+                
                 df['ema200'] = df['close'].ewm(span=200, adjust=False).mean()
                 df['ema50'] = df['close'].ewm(span=50, adjust=False).mean()
+                # ==============================
                 
                 i = len(df) - 1
                 current = df.iloc[i]
                 timestamp = int(current['timestamp'])
                 
-                macd_line = df['MACD_12_26_9'].iloc[i-1]
-                signal_line = df['MACDs_12_26_9'].iloc[i-1]
-                adx_val = df['ADX_14'].iloc[i-1]
+                macd_line = df['MACD_line'].iloc[i-1]
+                signal_line = df['MACD_signal'].iloc[i-1]
+                adx_val = df['ADX'].iloc[i-1]
                 
                 trend_up = current['close'] > current['ema200'] and current['ema50'] > current['ema200']
                 trend_down = current['close'] < current['ema200'] and current['ema50'] < current['ema200']
                 bos_bull = df['close'].iloc[i-1] > df['high'].iloc[i-10:i-2].max()
                 bos_bear = df['close'].iloc[i-1] < df['low'].iloc[i-10:i-2].min()
 
-                # 防止重複推播同一根 K 線
                 signal_key = f"{sym}_{timestamp}"
                 if signal_key in sent_signals: continue
-                
-                # 定期清理舊訊號記憶以節省記憶體
-                if len(sent_signals) > 1000:
-                    sent_signals.clear()
+                if len(sent_signals) > 1000: sent_signals.clear()
 
-                # 動態計算當下複利倉位大小
                 margin_amount = user_capital * 0.20  
                 risk_amount = user_capital * 0.02    
 
-                # 🚀 買進 (LONG) 條件
+                # 🚀 買進
                 if adx_val > 25:
                     if macd_line > signal_line and bos_bull and trend_up and btc_trend == 1:
                         entry = current['close']
@@ -174,7 +167,7 @@ def market_scanner_loop():
                             bot.send_message(TELEGRAM_CHAT_ID, msg, parse_mode='Markdown')
                             sent_signals.add(signal_key)
 
-                    # 🔴 賣出 (SHORT) 條件
+                    # 🔴 賣出
                     elif macd_line < signal_line and bos_bear and trend_down and btc_trend == -1:
                         entry = current['close']
                         sl = df['high'].iloc[i-5:i-1].max() * 1.005
@@ -203,11 +196,9 @@ def market_scanner_loop():
         except Exception as e:
             print(f"盯盤主迴圈發生錯誤: {e}")
         
-        # 1 小時級別的策略，每小時檢查一次即可（稍微縮短為 3000 秒，避免錯過收盤剛更新的瞬間）
         time.sleep(3000)
 
 if __name__ == '__main__':
-    # 啟動時先發送一則通知到 Telegram，確認連線成功
     try:
         startup_msg = "🚀 **系統啟動成功！**\n機器人已開始在背景監控前 10 大強勢幣。你可以隨時輸入 `/help` 查看指令。"
         bot.send_message(TELEGRAM_CHAT_ID, startup_msg, parse_mode='Markdown')
@@ -215,10 +206,8 @@ if __name__ == '__main__':
     except Exception as e:
         print(f"❌ 傳送開機通知失敗，請檢查 TOKEN 與 CHAT_ID 是否正確。錯誤原因: {e}")
 
-    # 啟動背景掃描執行緒
     scanner_thread = threading.Thread(target=market_scanner_loop, daemon=True)
     scanner_thread.start()
     
-    # 啟動 Telegram 機器人監聽指令
     print("🚀 Telegram 互動機器人已開始接聽指令...")
     bot.infinity_polling()
