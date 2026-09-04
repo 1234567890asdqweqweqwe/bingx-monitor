@@ -7,7 +7,7 @@ import time
 from datetime import datetime
 
 # ==========================================
-# ⚙️ Telegram 機器人設定 (已填入專屬金鑰)
+# ⚙️ Telegram 機器人設定
 # ==========================================
 TELEGRAM_BOT_TOKEN = "7749949229:AAFbtmZvshpWbONAh3wfHzxM8gy2wansY5A"
 TELEGRAM_CHAT_ID = "5790520659"
@@ -20,8 +20,8 @@ user_capital = 100.0
 @bot.message_handler(commands=['start', 'help'])
 def send_welcome(message):
     welcome_text = (
-        "🤖 **歡迎使用 SMC 實盤智慧盯盤機器人！**\n\n"
-        "我會在背景 24 小時幫你監控【前 10 大強勢幣 + BTC 大盤】，並使用黃金 2R 參數為你發送高勝率訊號。\n\n"
+        "🤖 **歡迎使用 SMC 波段實盤智慧盯盤機器人！**\n\n"
+        "我會在背景 24 小時幫你監控【漲幅 Top 10 可交易強勢幣 + BTC 大盤】，並使用「10% 停損 / 20% 停利」波段參數為你發送高爆發訊號。\n\n"
         "🛠 **可用指令列表：**\n"
         "👉 `/status` - 查看當前總資金與下單建議金額\n"
         "👉 `/capital 150` - 更新你的最新總資金為 150U\n"
@@ -45,21 +45,23 @@ def update_capital(message):
 
 @bot.message_handler(commands=['status'])
 def show_status(message):
-    risk_amount = user_capital * 0.02
-    margin_amount = user_capital * 0.20
+    # 智慧複利資金邏輯：小於100U保底10U風險，大於100U則用10%
+    risk_amount = user_capital * 0.10 if user_capital > 100.0 else 10.0
+    margin_amount = risk_amount * 5 # 配合波段較寬的槓桿評估
     status_msg = (
-        f"📊 **【實盤複利狀態】**\n"
+        f"📊 **【波段實盤複利狀態】**\n"
         f"━━━━━━━━━━━━━━━━━━━\n"
         f"💳 當前總資金: `{user_capital:.2f} USDT`\n"
-        f"⚠️ 單筆最大風險 (2%): `{risk_amount:.2f} USDT`\n"
-        f"💰 建議保證金 (20%): `{margin_amount:.2f} USDT` (配合10x槓桿)\n"
+        f"⚠️ 單筆風控金額 (10%): `{risk_amount:.2f} USDT`\n"
+        f"🎯 預計停損目標 (-10%): `{risk_amount:.2f} USDT`\n"
+        f"🎯 預計停利目標 (+20%): `{risk_amount * 2.0:.2f} USDT`\n"
         f"━━━━━━━━━━━━━━━━━━━"
     )
     bot.reply_to(message, status_msg, parse_mode='Markdown')
 
 @bot.message_handler(commands=['test'])
 def test_signal(message):
-    bot.reply_to(message, "✅ 測試成功！機器人推播功能 100% 正常，雷達掃描引擎運作中👀")
+    bot.reply_to(message, "✅ 測試成功！波段機器人推播功能 100% 正常，雷達掃描引擎運作中👀")
 
 def fetch_ohlcv(symbol, limit=200):
     try:
@@ -69,7 +71,7 @@ def fetch_ohlcv(symbol, limit=200):
         return pd.DataFrame()
 
 def market_scanner_loop():
-    print("🤖 背景掃描引擎已啟動 (全市場 Top 10 + 黃金參數)...")
+    print("🤖 背景掃描引擎已啟動 (智慧遞補漲幅 Top 10 + 10%停損/20%停利波段)...")
     sent_signals = set()
 
     while True:
@@ -89,21 +91,42 @@ def market_scanner_loop():
                 if c_close > c_e200 and c_e50 > c_e200: btc_trend = 1
                 elif c_close < c_e200 and c_e50 < c_e200: btc_trend = -1
 
-            # 2. 動態篩選 Top 10 強勢幣
+            # 2. 動態抓取並嚴格過濾可交易的漲幅 Top 10
             try: tickers = exchange.fetch_tickers()
             except: tickers = {}
             
-            blacklist = ['GOLD', 'SILVER', 'XAU', 'XAG', 'WTI', 'BRENT', 'OIL', 'DXY', 'BTC', 'ETH', 'USDT', 'USDC']
-            symbol_vol = []
+            blacklist = ['GOLD', 'SILVER', 'XAU', 'XAG', 'WTI', 'BRENT', 'OIL', 'DXY', 'USDT', 'USDC', 'FDUSD', 'TUSD', 'USDD']
+            symbol_change = []
+            
             for sym, data in tickers.items():
+                info = data.get('info', {})
+                is_trading = True
+                if isinstance(info, dict):
+                    status_val = info.get('status', 'trading')
+                    if status_val not in ['trading', '1', True]: 
+                        is_trading = False
+
                 vol = data.get('quoteVolume', 0)
-                if sym.endswith(':USDT') and vol > 10000000:
+                pct_change = data.get('percentage', 0)
+                if pct_change is None: pct_change = 0
+                    
+                if is_trading and sym.endswith(':USDT') and vol > 5000000:
                     base = sym.split('/')[0].split('-')[0].split(':')[0]
-                    if base not in blacklist and len(base) <= 8:
-                        symbol_vol.append({'symbol': sym, 'volume': vol})
+                    if base not in blacklist and len(base) <= 10:
+                        symbol_change.append({'symbol': sym, 'change': pct_change})
             
-            top10_symbols = [item['symbol'] for item in sorted(symbol_vol, key=lambda x: x['volume'], reverse=True)[:10]]
+            # 依 24h 漲幅由大到小排序
+            sorted_candidates = sorted(symbol_change, key=lambda x: x['change'], reverse=True)
             
+            # 智慧遞補湊滿 10 個有效幣種
+            top10_symbols = []
+            for item in sorted_candidates:
+                if len(top10_symbols) >= 10: break
+                sym = item['symbol']
+                df_test = fetch_ohlcv(sym, 200)
+                if len(df_test) >= 200:
+                    top10_symbols.append(sym)
+
             # 3. 逐一計算指標與發送訊號
             for sym in top10_symbols:
                 df = fetch_ohlcv(sym, 250)
@@ -136,62 +159,59 @@ def market_scanner_loop():
                 if signal_key in sent_signals: continue
                 if len(sent_signals) > 1000: sent_signals.clear()
 
-                margin_amount = user_capital * 0.20  
-                risk_amount = user_capital * 0.02    
+                # 智慧資金控管計算
+                risk_amount = (user_capital * 0.10) if user_capital > 100.0 else 10.0
+                margin_amount = risk_amount * 5 # 建議保證金範例
 
-                # 🏆 核心：套用回測驗證的黃金參數
-                if adx_val > 25: # 參數 1: 嚴格趨勢過濾
-                    # 🟢 多單進場
+                # 🏆 核心：套用波段策略參數 (ADX > 25)
+                if adx_val > 25: 
+                    # 🟢 多單進場 (10% 停損 / 20% 停利)
                     if macd_line > signal_line and bos_bull and trend_up and btc_trend == 1:
                         entry = current['close']
-                        sl = df['low'].iloc[i-5:i-1].min() * 0.995 # 參數 2: 0.5% 緊湊防守
-                        risk = entry - sl
-                        if risk > 0 and 0.01 <= (risk / entry) <= 0.05:
-                            tp1 = entry + risk
-                            tp2 = entry + (2.0 * risk) # 參數 3: 黃金 2R 停利
-                            msg = (
-                                f"🟢 **【SMC 實盤多單訊號】**\n"
-                                f"━━━━━━━━━━━━━━━━━━━\n"
-                                f"📌 標的: `{sym.split('/')[0]}`\n"
-                                f"📍 進場價 (Entry): `{entry:.4f}`\n"
-                                f"🛑 建議停損 (SL): `{sl:.4f}`\n"
-                                f"🎯 TP1 (1R保本半倉): `{tp1:.4f}`\n"
-                                f"🎯 TP2 (2R完全停利): `{tp2:.4f}`\n"
-                                f"━━━━━━━━━━━━━━━━━━━\n"
-                                f"💳 當前資金: `{user_capital:.2f}U`\n"
-                                f"💰 **建議下單保證金 (20%): `{margin_amount:.2f}U` (10x)**\n"
-                                f"⚠️ 單筆風控金額 (2%): `{risk_amount:.2f}U`\n"
-                                f"━━━━━━━━━━━━━━━━━━━\n"
-                                f"⏰ 時間: {datetime.utcnow().strftime('%m-%d %H:%M')} UTC"
-                            )
-                            bot.send_message(TELEGRAM_CHAT_ID, msg, parse_mode='Markdown')
-                            sent_signals.add(signal_key)
+                        sl = entry * 0.90  # 10% 停損
+                        tp1 = entry * 1.10 # 10% 漲幅保本 (1R)
+                        tp2 = entry * 1.20 # 20% 漲幅完利 (2R)
+                        
+                        msg = (
+                            f"🟢 **【SMC 波段多單訊號】**\n"
+                            f"━━━━━━━━━━━━━━━━━━━\n"
+                            f"📌 標的: `{sym.split('/')[0].split('-')[0]}`\n"
+                            f"📍 進場價 (Entry): `{entry:.4f}`\n"
+                            f"🛑 建議停損 (SL): `{sl:.4f}` (-10%)\n"
+                            f"🎯 TP1 (1R保本半倉): `{tp1:.4f}` (+10%)\n"
+                            f"🎯 TP2 (2R完全停利): `{tp2:.4f}` (+20%)\n"
+                            f"━━━━━━━━━━━━━━━━━━━\n"
+                            f"💳 當前資金: `{user_capital:.2f}U`\n"
+                            f"⚠️ 單筆風控金額 (10%): `{risk_amount:.2f}U`\n"
+                            f"━━━━━━━━━━━━━━━━━━━\n"
+                            f"⏰ 時間: {datetime.utcnow().strftime('%m-%d %H:%M')} UTC"
+                        )
+                        bot.send_message(TELEGRAM_CHAT_ID, msg, parse_mode='Markdown')
+                        sent_signals.add(signal_key)
 
-                    # 🔴 空單進場
+                    # 🔴 空單進場 (10% 停損 / 20% 停利)
                     elif macd_line < signal_line and bos_bear and trend_down and btc_trend == -1:
                         entry = current['close']
-                        sl = df['high'].iloc[i-5:i-1].max() * 1.005 # 參數 2: 0.5% 緊湊防守
-                        risk = sl - entry
-                        if risk > 0 and 0.01 <= (risk / entry) <= 0.05:
-                            tp1 = entry - risk
-                            tp2 = entry - (2.0 * risk) # 參數 3: 黃金 2R 停利
-                            msg = (
-                                f"🔴 **【SMC 實盤空單訊號】**\n"
-                                f"━━━━━━━━━━━━━━━━━━━\n"
-                                f"📌 標的: `{sym.split('/')[0]}`\n"
-                                f"📍 進場價 (Entry): `{entry:.4f}`\n"
-                                f"🛑 建議停損 (SL): `{sl:.4f}`\n"
-                                f"🎯 TP1 (1R保本半倉): `{tp1:.4f}`\n"
-                                f"🎯 TP2 (2R完全停利): `{tp2:.4f}`\n"
-                                f"━━━━━━━━━━━━━━━━━━━\n"
-                                f"💳 當前資金: `{user_capital:.2f}U`\n"
-                                f"💰 **建議下單保證金 (20%): `{margin_amount:.2f}U` (10x)**\n"
-                                f"⚠️ 單筆風控金額 (2%): `{risk_amount:.2f}U`\n"
-                                f"━━━━━━━━━━━━━━━━━━━\n"
-                                f"⏰ 時間: {datetime.utcnow().strftime('%m-%d %H:%M')} UTC"
-                            )
-                            bot.send_message(TELEGRAM_CHAT_ID, msg, parse_mode='Markdown')
-                            sent_signals.add(signal_key)
+                        sl = entry * 1.10  # 10% 停損
+                        tp1 = entry * 0.90 # 10% 跌幅保本 (1R)
+                        tp2 = entry * 0.80 # 20% 跌幅完利 (2R)
+                        
+                        msg = (
+                            f"🔴 **【SMC 波段空單訊號】**\n"
+                            f"━━━━━━━━━━━━━━━━━━━\n"
+                            f"📌 標的: `{sym.split('/')[0].split('-')[0]}`\n"
+                            f"📍 進場價 (Entry): `{entry:.4f}`\n"
+                            f"🛑 建議停損 (SL): `{sl:.4f}` (-10%)\n"
+                            f"🎯 TP1 (1R保本半倉): `{tp1:.4f}` (-10%)\n"
+                            f"🎯 TP2 (2R完全停利): `{tp2:.4f}` (-20%)\n"
+                            f"━━━━━━━━━━━━━━━━━━━\n"
+                            f"💳 當前資金: `{user_capital:.2f}U`\n"
+                            f"⚠️ 單筆風控金額 (10%): `{risk_amount:.2f}U`\n"
+                            f"━━━━━━━━━━━━━━━━━━━\n"
+                            f"⏰ 時間: {datetime.utcnow().strftime('%m-%d %H:%M')} UTC"
+                        )
+                        bot.send_message(TELEGRAM_CHAT_ID, msg, parse_mode='Markdown')
+                        sent_signals.add(signal_key)
 
         except Exception as e:
             print(f"盯盤主迴圈發生錯誤: {e}")
@@ -200,7 +220,7 @@ def market_scanner_loop():
 
 if __name__ == '__main__':
     try:
-        startup_msg = "🚀 **系統啟動成功！**\n機器人已套用【黃金 2R 參數】，開始在背景為您監控全市場前 10 大強勢幣。輸入 `/help` 查看指令。"
+        startup_msg = "🚀 **波段系統啟動成功！**\n機器人已套用【智慧遞補漲幅 Top 10 + 10%停損/20%停利 + 智能複利】，開始在背景為您監控。輸入 `/help` 查看指令。"
         bot.send_message(TELEGRAM_CHAT_ID, startup_msg, parse_mode='Markdown')
         print("✅ 開機通知已發送至 Telegram。")
     except Exception as e:
