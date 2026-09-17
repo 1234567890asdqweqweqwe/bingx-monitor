@@ -13,11 +13,10 @@ TELEGRAM_CHAT_ID = "5790520659"
 bot = telebot.TeleBot(TELEGRAM_BOT_TOKEN)
 exchange = ccxt.bingx({'enableRateLimit': True, 'options': {'defaultType': 'swap'}})
 
-# 💡 在 GitHub Actions 模式下，資金只能設定為固定值
-# 如果需要更改資金，直接來這裡修改後 push 上 GitHub 即可
+# 💡 初始本金。若未來要加碼，直接在此修改後更新到 GitHub 即可
 user_capital = 100.0  
 
-def fetch_ohlcv(symbol, limit=200):
+def fetch_ohlcv(symbol, limit=250):
     try:
         ohlcv = exchange.fetch_ohlcv(symbol, '1h', limit=limit)
         return pd.DataFrame(ohlcv, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
@@ -67,10 +66,8 @@ def run_market_scan():
                 if base not in blacklist and len(base) <= 10:
                     symbol_change.append({'symbol': sym, 'change': pct_change})
         
-        # 依 24h 漲幅由大到小排序
         sorted_candidates = sorted(symbol_change, key=lambda x: x['change'], reverse=True)
         
-        # 智慧遞補湊滿 10 個有效幣種
         top10_symbols = []
         for item in sorted_candidates:
             if len(top10_symbols) >= 10: break
@@ -105,25 +102,48 @@ def run_market_scan():
             
             trend_up = current['close'] > current['ema200'] and current['ema50'] > current['ema200']
             trend_down = current['close'] < current['ema200'] and current['ema50'] < current['ema200']
+            
+            # SMC 局部破壞結構 (BOS)
             bos_bull = df['close'].iloc[i-1] > df['high'].iloc[i-10:i-2].max()
             bos_bear = df['close'].iloc[i-1] < df['low'].iloc[i-10:i-2].min()
 
-            # 智慧資金控管計算
+            # ==========================================
+            # 🛡️ 🚀 核心新增：SNR 支撐壓力位分析系統
+            # ==========================================
+            # 計算過去 50 小時的宏觀天花板(壓力)與地板(支撐)
+            res_50 = df['high'].iloc[i-50:i-1].max()
+            sup_50 = df['low'].iloc[i-50:i-1].min()
+            
+            # 多頭 SNR 條件：(1) 強勢突破天花板，(2) 買在接近地板反彈處 (3%內)
+            long_snr_breakout = current['close'] > res_50
+            long_snr_bounce = (current['close'] - sup_50) / sup_50 <= 0.03
+            long_snr_valid = long_snr_breakout or long_snr_bounce
+
+            # 空頭 SNR 條件：(1) 暴跌摜破地板，(2) 在天花板附近遇阻力 (3%內)
+            short_snr_breakout = current['close'] < sup_50
+            short_snr_bounce = (res_50 - current['close']) / current['close'] <= 0.03
+            short_snr_valid = short_snr_breakout or short_snr_bounce
+            # ==========================================
+
+            # 智慧資金控管計算 (小於100U保底10U，大於100U複利10%)
             risk_amount = (user_capital * 0.10) if user_capital > 100.0 else 10.0
 
-            # 🏆 核心：套用波段策略參數 (ADX > 25)
+            # 綜合過濾條件：強動能 (ADX>25) + SMC結構突破 + SNR關鍵位確認
             if adx_val > 25: 
-                # 🟢 多單進場
-                if macd_line > signal_line and bos_bull and trend_up and btc_trend == 1:
+                # 🟢 多單進場 (10% 停損 / 20% 停利)
+                if macd_line > signal_line and bos_bull and trend_up and btc_trend == 1 and long_snr_valid:
                     entry = current['close']
                     sl = entry * 0.90
                     tp1 = entry * 1.10
                     tp2 = entry * 1.20 
                     
+                    snr_type = "🚀 突破 50h 天花板" if long_snr_breakout else "🛡️ 50h 支撐位精準反彈"
+
                     msg = (
-                        f"🟢 **【SMC 波段多單訊號】**\n"
+                        f"🟢 **【SMC + SNR 波段多單訊號】**\n"
                         f"━━━━━━━━━━━━━━━━━━━\n"
                         f"📌 標的: `{sym.split('/')[0].split('-')[0]}`\n"
+                        f"🔍 觸發型態: {snr_type}\n"
                         f"📍 進場價 (Entry): `{entry:.4f}`\n"
                         f"🛑 建議停損 (SL): `{sl:.4f}` (-10%)\n"
                         f"🎯 TP1 (1R保本半倉): `{tp1:.4f}` (+10%)\n"
@@ -135,19 +155,22 @@ def run_market_scan():
                     )
                     bot.send_message(TELEGRAM_CHAT_ID, msg, parse_mode='Markdown')
                     signals_found += 1
-                    print(f"✅ 已發送 {sym} 多單訊號")
+                    print(f"✅ 已發送 {sym} 多單訊號 ({snr_type})")
 
-                # 🔴 空單進場
-                elif macd_line < signal_line and bos_bear and trend_down and btc_trend == -1:
+                # 🔴 空單進場 (10% 停損 / 20% 停利)
+                elif macd_line < signal_line and bos_bear and trend_down and btc_trend == -1 and short_snr_valid:
                     entry = current['close']
                     sl = entry * 1.10
                     tp1 = entry * 0.90
                     tp2 = entry * 0.80 
                     
+                    snr_type = "📉 跌破 50h 地板" if short_snr_breakout else "🧱 50h 壓力位遇阻回落"
+
                     msg = (
-                        f"🔴 **【SMC 波段空單訊號】**\n"
+                        f"🔴 **【SMC + SNR 波段空單訊號】**\n"
                         f"━━━━━━━━━━━━━━━━━━━\n"
                         f"📌 標的: `{sym.split('/')[0].split('-')[0]}`\n"
+                        f"🔍 觸發型態: {snr_type}\n"
                         f"📍 進場價 (Entry): `{entry:.4f}`\n"
                         f"🛑 建議停損 (SL): `{sl:.4f}` (-10%)\n"
                         f"🎯 TP1 (1R保本半倉): `{tp1:.4f}` (-10%)\n"
@@ -159,7 +182,7 @@ def run_market_scan():
                     )
                     bot.send_message(TELEGRAM_CHAT_ID, msg, parse_mode='Markdown')
                     signals_found += 1
-                    print(f"✅ 已發送 {sym} 空單訊號")
+                    print(f"✅ 已發送 {sym} 空單訊號 ({snr_type})")
 
         print(f"🏁 掃描完成！本次共觸發 {signals_found} 個訊號。程式將自動關閉等待下次排程。")
 
@@ -167,5 +190,4 @@ def run_market_scan():
         print(f"❌ 掃描過程發生錯誤: {e}")
 
 if __name__ == '__main__':
-    # 在 GitHub Actions 模式下，直接執行掃描，跑完就自動結束程式
     run_market_scan()
